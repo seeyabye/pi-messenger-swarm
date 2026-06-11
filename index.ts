@@ -162,10 +162,11 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
     overlayTui?.requestRender();
   });
 
-  // Spawn completion polling: detect when spawned agents complete
-  // and notify the main agent via pi.sendMessage with triggerTurn.
-  // This runs independently of the overlay so the coordinator agent
-  // is always notified even when the overlay is closed.
+  // Spawn completion detection: poll spawn history for agents that
+  // completed since the last check and notify the main agent.
+  // Checks the event-sourced jsonl files directly (not the live-workers
+  // map) so it works even if the worker appeared and disappeared
+  // between poll intervals.
   const SPAWN_POLL_MS = 3_000;
   let spawnPollTimer: ReturnType<typeof setInterval> | null = null;
   const notifiedSpawnCompletions = new Set<string>();
@@ -175,27 +176,23 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
     spawnPollTimer = setInterval(async () => {
       if (!state.registered) return;
       const cwd = process.cwd();
+
+      // Also sync live workers for the overlay
       const result = await syncFromRemote(cwd);
       if (result.changed) safeUpdateStatus(latestCtx);
       overlayTui?.requestRender();
 
-      if (result.removedWorkers.length === 0) return;
-
+      // Check spawn history for completed agents we haven't notified about
       const sessionId = getEffectiveSessionId(cwd, state);
       const spawned = listSpawnedHistory(cwd, sessionId);
 
-      for (const removed of result.removedWorkers) {
-        // Avoid duplicate notifications for the same completion
-        const notifKey = `${removed.taskId}::${removed.name}`;
+      for (const agent of spawned) {
+        if (agent.status === 'running') continue;
+
+        // Deduplicate by spawn id
+        const notifKey = agent.id;
         if (notifiedSpawnCompletions.has(notifKey)) continue;
         notifiedSpawnCompletions.add(notifKey);
-
-        // Find the completed agent's record
-        const agent = spawned.find(
-          (a) => a.name === removed.name && (a.taskId === removed.taskId || a.id === removed.taskId)
-        );
-
-        if (!agent || agent.status === 'running') continue;
 
         const statusLabel =
           agent.status === 'completed'
@@ -203,7 +200,6 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
             : agent.status === 'failed'
               ? 'failed'
               : 'stopped';
-
         const taskInfo = agent.taskId ? ` (task: ${agent.taskId})` : '';
         const summary =
           agent.status === 'completed'
