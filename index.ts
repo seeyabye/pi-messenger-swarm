@@ -27,14 +27,14 @@ import {
 } from './lib.js';
 import { displayChannelLabel } from './channel.js';
 import * as store from './store.js';
-import { getContextSessionId, getEffectiveSessionId } from './store/shared.js';
+import { getContextSessionId, getEffectiveSessionId, ensureDirSync } from './store/shared.js';
 import { syncChannelStateFromDisk } from './store/agents.js';
 import { MessengerOverlay, type OverlayCallbacks } from './overlay/component.js';
 import { MessengerConfigOverlay } from './overlay/config-overlay.js';
 import { loadConfig, matchesAutoRegisterPath, type MessengerConfig } from './config.js';
 import { logFeedEvent, pruneFeed } from './feed/index.js';
-import { onLiveWorkersChanged, syncFromRemote } from './swarm/live-progress.js';
-import { listSpawnedHistory, stopAllSpawned } from './swarm/spawn.js';
+import { onLiveWorkersChanged } from './swarm/live-progress.js';
+import { stopAllSpawned } from './swarm/spawn.js';
 import { createDeliverMessage } from './extension/deliver-message.js';
 import { createStatusController } from './extension/status.js';
 import { createActivityTracker } from './extension/activity.js';
@@ -162,83 +162,120 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
     overlayTui?.requestRender();
   });
 
-  // Spawn completion polling: detect when spawned agents complete
-  // and notify the main agent via pi.sendMessage with triggerTurn.
-  // This runs independently of the overlay so the coordinator agent
-  // is always notified even when the overlay is closed.
-  const SPAWN_POLL_MS = 3_000;
-  let spawnPollTimer: ReturnType<typeof setInterval> | null = null;
-  const notifiedSpawnCompletions = new Set<string>();
+  // Spawn completion watcher: detect spawn result files written by the
+  // harness server and notify the main agent via pi.sendMessage.
+  // Uses fs.watch() on the results directory (like pi-subagents' approach)
+  // so it works even if the harness server restarts or the HTTP poll fails.
+  const SPAWN_RESULTS_DIR = join(getAgentDir(), 'messenger', 'spawn-results');
+  let spawnResultWatcher: ReturnType<typeof fs.watch> | null = null;
+  const spawnCompletionSeen = new Set<string>();
 
-  function startSpawnCompletionPoll(): void {
-    if (spawnPollTimer) return;
-    spawnPollTimer = setInterval(async () => {
-      if (!state.registered) return;
-      const cwd = process.cwd();
-      const result = await syncFromRemote(cwd);
-      if (result.changed) safeUpdateStatus(latestCtx);
-      overlayTui?.requestRender();
+  function processSpawnResultFile(file: string): void {
+    if (!file.endsWith('.json')) return;
+    const resultPath = join(SPAWN_RESULTS_DIR, file);
+    if (!fs.existsSync(resultPath)) return;
 
-      if (result.removedWorkers.length === 0) return;
+    // Deduplicate
+    const spawnId = file.replace(/\.json$/i, '');
+    if (spawnCompletionSeen.has(spawnId)) return;
+    spawnCompletionSeen.add(spawnId);
 
-      const sessionId = getEffectiveSessionId(cwd, state);
-      const spawned = listSpawnedHistory(cwd, sessionId);
+    try {
+      const data = JSON.parse(fs.readFileSync(resultPath, 'utf-8')) as {
+        id: string;
+        agent: string;
+        role: string;
+        success: boolean;
+        status: string;
+        exitCode?: number;
+        taskId?: string;
+        sessionId?: string;
+        channel?: string;
+        projectCwd?: string;
+        cwd?: string;
+        objective?: string;
+        error?: string;
+        endedAt?: string;
+      };
 
-      for (const removed of result.removedWorkers) {
-        // Avoid duplicate notifications for the same completion
-        const notifKey = `${removed.taskId}::${removed.name}`;
-        if (notifiedSpawnCompletions.has(notifKey)) continue;
-        notifiedSpawnCompletions.add(notifKey);
+      // Only notify for this session's spawns
+      if (data.sessionId && data.sessionId !== state.contextSessionId) return;
 
-        // Find the completed agent's record
-        const agent = spawned.find(
-          (a) => a.name === removed.name && (a.taskId === removed.taskId || a.id === removed.taskId)
-        );
+      const statusLabel =
+        data.status === 'completed' ? 'completed' : data.status === 'failed' ? 'failed' : 'stopped';
+      const taskInfo = data.taskId ? ` (task: ${data.taskId})` : '';
+      const summary =
+        data.status === 'completed'
+          ? data.objective || 'Mission complete'
+          : data.error || 'Unknown error';
 
-        if (!agent || agent.status === 'running') continue;
+      pi.sendMessage(
+        {
+          customType: 'spawn_completion',
+          content:
+            `🔔 Spawned agent ${data.agent} (${data.role}) ${statusLabel}${taskInfo}. ` +
+            `Summary: ${summary}. ` +
+            (data.taskId
+              ? `Check output: pi-messenger-swarm task show ${data.taskId}`
+              : `Use pi-messenger-swarm spawn history for details.`),
+          display: true,
+        },
+        { triggerTurn: !overlayHandle || overlayHandle.isHidden() }
+      );
 
-        const statusLabel =
-          agent.status === 'completed'
-            ? 'completed'
-            : agent.status === 'failed'
-              ? 'failed'
-              : 'stopped';
-
-        const taskInfo = agent.taskId ? ` (task: ${agent.taskId})` : '';
-        const summary =
-          agent.status === 'completed'
-            ? agent.objective || 'Mission complete'
-            : agent.error || 'Unknown error';
-
-        pi.sendMessage(
-          {
-            customType: 'spawn_completion',
-            content:
-              `🔔 Spawned agent ${agent.name} (${agent.role}) ${statusLabel}${taskInfo}. ` +
-              `Summary: ${summary}. ` +
-              (agent.taskId
-                ? `Check output: pi-messenger-swarm task show ${agent.taskId}`
-                : `Use pi-messenger-swarm spawn history for details.`),
-            display: true,
-          },
-          { triggerTurn: !overlayHandle || overlayHandle.isHidden() }
-        );
+      // Clean up the result file after processing
+      try {
+        fs.unlinkSync(resultPath);
+      } catch {
+        /* best effort */
       }
+    } catch {
+      // Malformed result file — skip
+    }
 
-      // Prune old completion keys to prevent unbounded growth
-      if (notifiedSpawnCompletions.size > 200) {
-        const entries = Array.from(notifiedSpawnCompletions);
-        for (let i = 0; i < entries.length - 100; i++) {
-          notifiedSpawnCompletions.delete(entries[i]);
-        }
+    // Prune old completion keys
+    if (spawnCompletionSeen.size > 200) {
+      const entries = Array.from(spawnCompletionSeen);
+      for (let i = 0; i < entries.length - 100; i++) {
+        spawnCompletionSeen.delete(entries[i]);
       }
-    }, SPAWN_POLL_MS);
+    }
   }
 
-  function stopSpawnCompletionPoll(): void {
-    if (!spawnPollTimer) return;
-    clearInterval(spawnPollTimer);
-    spawnPollTimer = null;
+  function primeExistingSpawnResults(): void {
+    try {
+      if (!fs.existsSync(SPAWN_RESULTS_DIR)) return;
+      for (const file of fs.readdirSync(SPAWN_RESULTS_DIR)) {
+        if (!file.endsWith('.json')) continue;
+        processSpawnResultFile(file);
+      }
+    } catch {
+      /* best effort */
+    }
+  }
+
+  function startSpawnResultWatcher(): void {
+    if (spawnResultWatcher) return;
+    try {
+      ensureDirSync(SPAWN_RESULTS_DIR);
+      spawnResultWatcher = fs.watch(SPAWN_RESULTS_DIR, (ev, file) => {
+        if (ev !== 'rename' || !file) return;
+        processSpawnResultFile(file.toString());
+      });
+      spawnResultWatcher.on('error', () => {
+        spawnResultWatcher?.close();
+        spawnResultWatcher = null;
+      });
+      spawnResultWatcher.unref?.();
+      primeExistingSpawnResults();
+    } catch {
+      // fs.watch unavailable — spawn completions will still show in the feed
+    }
+  }
+
+  function stopSpawnResultWatcher(): void {
+    spawnResultWatcher?.close();
+    spawnResultWatcher = null;
   }
 
   function sendRegistrationContext(ctx: ExtensionContext): void {
@@ -391,7 +428,7 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
   pi.on('session_start', async (_event, ctx) => {
     latestCtx = ctx;
     startStatusHeartbeat();
-    startSpawnCompletionPoll();
+    startSpawnResultWatcher();
     state.isHuman = ctx.hasUI;
     try {
       fs.rmSync(join(getAgentDir(), 'messenger/feed.jsonl'), { force: true });
@@ -502,7 +539,7 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
     const cwd = process.cwd();
     stopAllSpawned(cwd); // In-process safety net for extension-spawned agents
     stopStatusHeartbeat();
-    stopSpawnCompletionPoll();
+    stopSpawnResultWatcher();
     // Do NOT send /quit to the harness server on session shutdown.
     // The harness is a long-lived daemon (detached + unref'd) designed to
     // survive across pi sessions. Killing it destroys all spawned subagents
