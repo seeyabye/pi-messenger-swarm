@@ -171,26 +171,32 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
   let spawnPollTimer: ReturnType<typeof setInterval> | null = null;
   const notifiedSpawnCompletions = new Set<string>();
 
+  let primedSpawnCompletions = false;
+
   function startSpawnCompletionPoll(): void {
     if (spawnPollTimer) return;
-
-    // Prime the notification set with already-completed agents so we don't
-    // re-notify about historical completions on extension reload.
-    try {
-      const cwd = process.cwd();
-      const sessionId = getEffectiveSessionId(cwd, state);
-      const existing = listSpawnedHistory(cwd, sessionId);
-      for (const agent of existing) {
-        if (agent.status !== 'running' && agent.id) {
-          notifiedSpawnCompletions.add(agent.id);
-        }
-      }
-    } catch {
-      // Best effort — if priming fails we'll just get duplicate notifications
-    }
-
     spawnPollTimer = setInterval(async () => {
       if (!state.registered) return;
+
+      // Prime the notification set with already-completed agents so we don't
+      // re-notify about historical completions on extension reload.
+      // Must happen here (after registration) because getEffectiveSessionId
+      // depends on state.currentChannel which is set during register().
+      if (!primedSpawnCompletions) {
+        primedSpawnCompletions = true;
+        try {
+          const cwd = process.cwd();
+          const sessionId = getEffectiveSessionId(cwd, state);
+          const existing = listSpawnedHistory(cwd, sessionId);
+          for (const agent of existing) {
+            if (agent.status !== 'running' && agent.id) {
+              notifiedSpawnCompletions.add(agent.id);
+            }
+          }
+        } catch {
+          // Best effort — if priming fails we'll just get duplicate notifications
+        }
+      }
       const cwd = process.cwd();
 
       // Also sync live workers for the overlay
