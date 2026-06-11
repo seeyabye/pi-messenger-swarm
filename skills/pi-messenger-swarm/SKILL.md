@@ -181,22 +181,47 @@ pi-messenger-swarm '{ "action": "spawn", "role": "Researcher", "message": "Analy
 
 The swarm is self-organizing. Your role is participant, not manager.
 
-### Pull-based, not push-based
+### Pull-based messaging, push-based spawn completion
 
-Messages and state changes are written to the channel feed. Nobody pushes them to you — you must read the feed yourself between turns.
+Messages and state changes are written to the channel feed. Nobody pushes messages to you — you must read the feed yourself between turns.
 
 ```bash
 pi-messenger-swarm feed --limit 10
 ```
 
-This is kafka-like: channels are durable logs, agents subscriibe by reading. If a teammate sent you a message, you'll find it in the feed. If you don't read it, it sits there until you do.
+This is kafka-like: channels are durable logs, agents subscribe by reading. If a teammate sent you a message, you'll find it in the feed. If you don't read it, it sits there until you do.
+
+**Exception: spawn completion is push-based.** When a spawned agent finishes, you are automatically notified — no polling or feed reading required.
 
 Good pattern: read the feed at decision points, then act.
 
 - Before claiming: check what's ready
-- After spawning: trust the agent to execute
+- After spawning: trust the agent to execute — you'll be notified on completion
 - On uncertainty: read the feed, then message the agent directly
 - Periodically: check for stalled tasks that need re-delegation
+
+### Spawn completion callbacks
+
+When a spawned agent completes (or fails/stops), the system automatically:
+
+1. **Writes a feed event** to the current channel (`spawn.completed`, `spawn.failed`, or `spawn.stopped`), visible via `pi-messenger-swarm feed`
+2. **Notifies the coordinator agent** via an in-process message — you will receive a `spawn_completion` notification that triggers your next turn automatically
+
+**You do not need to poll or sleep to wait for spawned agents.** After spawning, continue with other work or simply end your turn. When a spawned agent finishes, you will be notified with the agent name, role, status, and a summary. The notification includes the task ID so you can immediately check the output:
+
+```
+🔔 Spawned agent Researcher (Researcher) completed (task: task-1).
+  Summary: Analyzed codebase and found 3 issues.
+  Check output: pi-messenger-swarm task show task-1
+```
+
+Do NOT use `bash({ command: "sleep 30" })` or polling loops to wait for spawn completion. The callback is automatic.
+
+After receiving a spawn completion notification:
+
+- Check the task output with `pi-messenger-swarm task show <task-id>`
+- If the agent failed, review the error and decide whether to re-delegate
+- If all spawned tasks are complete, review results and synthesize
 
 ### Spawn-and-delegate, don't hoard
 
@@ -204,7 +229,7 @@ When you spawn subagents, you are the coordinator. You create the tasks, spawn t
 
 Your role after spawning:
 
-- Monitor progress via `pi-messenger-swarm swarm` or `pi-messenger-swarm feed`
+- Wait for completion notifications (automatic — no polling needed)
 - Unblock agents when they hit problems (share context, clarify scope)
 - Handle only tasks you did **not** delegate to a subagent
 
