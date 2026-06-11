@@ -173,6 +173,22 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
 
   function startSpawnCompletionPoll(): void {
     if (spawnPollTimer) return;
+
+    // Prime the notification set with already-completed agents so we don't
+    // re-notify about historical completions on extension reload.
+    try {
+      const cwd = process.cwd();
+      const sessionId = getEffectiveSessionId(cwd, state);
+      const existing = listSpawnedHistory(cwd, sessionId);
+      for (const agent of existing) {
+        if (agent.status !== 'running' && agent.id) {
+          notifiedSpawnCompletions.add(agent.id);
+        }
+      }
+    } catch {
+      // Best effort — if priming fails we'll just get duplicate notifications
+    }
+
     spawnPollTimer = setInterval(async () => {
       if (!state.registered) return;
       const cwd = process.cwd();
