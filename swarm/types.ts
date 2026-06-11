@@ -75,4 +75,5 @@ export interface SpawnedAgent {
   sessionId?: string;
   pid?: number;
   channel?: string;
+  projectCwd?: string;
 }

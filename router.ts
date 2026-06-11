@@ -37,6 +37,7 @@ export async function executeAction(
   const group = dotIndex > 0 ? action.slice(0, dotIndex) : action;
   const op = dotIndex > 0 ? action.slice(dotIndex + 1) : null;
   const cwd = ctx.cwd ?? process.cwd();
+  const callerCwd = (ctx as any).callerCwd as string | undefined;
   const sessionId = getEffectiveSessionId(cwd, state);
 
   // Helper to get current channel or throw
@@ -220,7 +221,15 @@ export async function executeAction(
       return handlers.executeChannels(state, dirs, cwd, params.showAll ? true : undefined);
 
     case 'spawn':
-      return executeSpawn(op, params, state, cwd, sessionId, config?.maxConcurrentSpawns);
+      return executeSpawn(
+        op,
+        params,
+        state,
+        cwd,
+        sessionId,
+        config?.maxConcurrentSpawns,
+        callerCwd
+      );
 
     default:
       return result(`Unknown action: ${action}`, {

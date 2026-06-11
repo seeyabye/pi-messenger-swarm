@@ -259,6 +259,8 @@ function buildPrompt(request: SpawnRequest): string {
 interface SpawnState {
   id: string;
   cwd: string;
+  /** The coordinator's project cwd — where the channel/feed lives. */
+  projectCwd: string;
   name: string;
   request: SpawnRequest;
   prompt: string;
@@ -461,7 +463,7 @@ function attachHandlers(
         status === 'completed'
           ? runtime.record.objective || undefined
           : runtime.record.error || undefined;
-      logFeedEvent(state.cwd, state.name, feedType, taskLabel, preview, state.channel);
+      logFeedEvent(state.projectCwd, state.name, feedType, taskLabel, preview, state.channel);
     }
   });
 }
@@ -470,7 +472,8 @@ export function spawnSubagent(
   cwd: string,
   request: SpawnRequest,
   sessionId: string,
-  inheritedChannel?: string
+  inheritedChannel?: string,
+  projectCwd?: string
 ): SpawnedAgent {
   const id = randomUUID().slice(0, 8);
   const name = request.name?.trim() || generateMemorableName();
@@ -514,6 +517,7 @@ export function spawnSubagent(
     startedAt,
     sessionId,
     channel: inheritedChannel,
+    projectCwd: projectCwd || cwd,
   };
   record.systemPrompt = systemPrompt;
 
@@ -536,6 +540,7 @@ export function spawnSubagent(
   const spawnState: SpawnState = {
     id,
     cwd,
+    projectCwd: projectCwd || cwd,
     name,
     request,
     prompt,
@@ -1108,7 +1113,14 @@ function startDetachedPolling(): void {
             runtime.record.status === 'completed'
               ? runtime.record.objective || undefined
               : runtime.record.error || undefined;
-          logFeedEvent(runtime.record.cwd, agentName, feedType, taskLabel, preview, channel);
+          logFeedEvent(
+            runtime.record.projectCwd || runtime.record.cwd,
+            agentName,
+            feedType,
+            taskLabel,
+            preview,
+            channel
+          );
         }
 
         removeLiveWorker(runtime.record.cwd, runtime.record.taskId || spawnLiveKey(id));

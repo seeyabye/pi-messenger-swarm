@@ -380,6 +380,9 @@ function resolveAgentState(
  */
 interface HarnessContext {
   cwd: string;
+  /** The original caller CWD from x-caller-cwd header — used for feed events
+   * to ensure they go to the correct project, not a stale registration's cwd. */
+  callerCwd?: string;
   hasUI: boolean;
   model: string;
   sessionManager: { getSessionId: () => string };
@@ -390,9 +393,10 @@ interface HarnessContext {
   };
 }
 
-function createHarnessContext(sessionId: string, cwd?: string): HarnessContext {
+function createHarnessContext(sessionId: string, cwd?: string, callerCwd?: string): HarnessContext {
   return {
     cwd: cwd || normalizeCwd(process.cwd()),
+    callerCwd,
     hasUI: false,
     model: 'harness',
     sessionManager: {
@@ -585,7 +589,11 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     // Use session ID from header (written by extension to .pi/messenger/session-id)
     // if available, otherwise fall back to the state's contextSessionId (from disk).
     const effectiveSessionId = sessionId || state.contextSessionId || '';
-    const ctx = createHarnessContext(effectiveSessionId, resolvedCwd);
+    const ctx = createHarnessContext(
+      effectiveSessionId,
+      resolvedCwd,
+      callerCwd ? normalizeCwd(callerCwd) : undefined
+    );
     // Also update the state's contextSessionId so handlers use it
     state.contextSessionId = effectiveSessionId;
 

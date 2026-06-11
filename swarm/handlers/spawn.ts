@@ -23,13 +23,14 @@ export function executeSpawn(
   state: MessengerState,
   cwd: string,
   sessionId: string,
-  maxConcurrentSpawns?: number
+  maxConcurrentSpawns?: number,
+  callerCwd?: string
 ) {
   cleanupExitedSpawned(cwd, sessionId);
   reconcileSpawnedAgents(cwd, sessionId);
 
   if (!op) {
-    return spawnCreate(params, state, cwd, sessionId, maxConcurrentSpawns);
+    return spawnCreate(params, state, cwd, sessionId, maxConcurrentSpawns, callerCwd);
   }
 
   if (op === 'list') {
@@ -173,7 +174,8 @@ function spawnCreate(
   state: MessengerState,
   cwd: string,
   sessionId: string,
-  maxConcurrentSpawns?: number
+  maxConcurrentSpawns?: number,
+  callerCwd?: string
 ) {
   // Guardrail: if the user has ready tasks but forgot --task-id, warn them
   // instead of letting an unbound agent float and accidentally claim/create
@@ -242,7 +244,7 @@ function spawnCreate(
     };
 
     try {
-      const record = spawnSubagent(cwd, request, sessionId, state.currentChannel);
+      const record = spawnSubagent(cwd, request, sessionId, state.currentChannel, callerCwd);
       const roleLabel = formatRoleLabel(record.role);
       logFeedEvent(
         cwd,
@@ -284,7 +286,7 @@ function spawnCreate(
     name: params.name,
   };
 
-  const record = spawnSubagent(cwd, request, sessionId, state.currentChannel);
+  const record = spawnSubagent(cwd, request, sessionId, state.currentChannel, callerCwd);
   const roleLabel = formatRoleLabel(record.role);
   logFeedEvent(
     cwd,
