@@ -221,7 +221,7 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
                 : `Use pi-messenger-swarm spawn history for details.`),
             display: true,
           },
-          { triggerTurn: true }
+          { triggerTurn: !overlayHandle || overlayHandle.isHidden() }
         );
       }
 
@@ -498,6 +498,7 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
   });
 
   pi.on('session_shutdown', async () => {
+    latestCtx = null; // Prevent stale context use after shutdown
     const cwd = process.cwd();
     stopAllSpawned(cwd); // In-process safety net for extension-spawned agents
     stopStatusHeartbeat();
