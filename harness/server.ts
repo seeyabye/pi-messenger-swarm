@@ -496,6 +496,26 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     return;
   }
 
+  // Live workers endpoint — returns the harness server's in-memory liveWorkers
+  // map so the overlay (running in the main pi process) can display real-time
+  // spawn progress. Without this, the overlay's getLiveWorkers() returns empty
+  // because updateLiveWorker() only runs in the harness server process.
+  if (req.method === 'GET' && url.pathname === '/live-workers') {
+    const callerCwd = header(req, 'x-caller-cwd');
+    const { getLiveWorkers } = await import('../swarm/live-progress.js');
+    const workers = getLiveWorkers(callerCwd || undefined);
+    const entries = Array.from(workers.values()).map((w) => ({
+      taskId: w.taskId,
+      agent: w.agent,
+      name: w.name,
+      progress: w.progress,
+      startedAt: w.startedAt,
+    }));
+    res.writeHead(200, TEXT_JSON);
+    res.end(JSON.stringify({ ok: true, workers: entries }));
+    return;
+  }
+
   // Action endpoint
   if (req.method === 'POST' && url.pathname === '/action') {
     let body: string;

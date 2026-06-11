@@ -46,8 +46,9 @@ export function resolveCli(): CliResolution {
   const distCli = getDistCliPath();
   if (distCli) {
     const __dirname = fileURLToPath(new URL('.', import.meta.url));
-    // cwd is the package root (parent of dist/)
-    return { command: 'node', prefixArgs: [], cliPath: distCli, cwd: join(__dirname, '..') };
+    // cwd is the package root (parent of dist/) — __dirname is dist/extension/
+    // so we need to go up two levels to reach the package root.
+    return { command: 'node', prefixArgs: [], cliPath: distCli, cwd: join(__dirname, '..', '..') };
   }
   const sourceCli = getSourceCliPath();
   const projectRoot = getProjectRoot();
@@ -81,6 +82,7 @@ export function installShellAlias(): void {
 
     const argsStr = prefixArgs.length > 0 ? ` ${prefixArgs.join(' ')}` : '';
     const wrapperContent = `#!/bin/sh
+export PI_MESSENGER_CALLER_CWD="$(pwd)"
 cd "${cwd}" 2>/dev/null
 exec ${command}${argsStr} "${cliPath}" "$@"
 `;

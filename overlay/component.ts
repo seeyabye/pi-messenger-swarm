@@ -45,7 +45,12 @@ import {
   getSignificantEventMessage,
   type CompletionStateCache,
 } from './notifications.js';
-import { getLiveWorkers, hasLiveWorkers, onLiveWorkersChanged } from '../swarm/live-progress.js';
+import {
+  getLiveWorkers,
+  hasLiveWorkers,
+  onLiveWorkersChanged,
+  syncFromRemote,
+} from '../swarm/live-progress.js';
 import { listSpawnedHistory } from '../swarm/spawn.js';
 import { loadConfig } from '../config.js';
 
@@ -125,16 +130,24 @@ export class MessengerOverlay implements Component, Focusable {
   }
 
   private syncRefreshTimers(): void {
-    if (hasLiveWorkers(this.cwd)) this.startProgressRefresh();
+    if (hasLiveWorkers(this.cwd) || this.hasRunningSpawns()) this.startProgressRefresh();
     else this.stopProgressRefresh();
+  }
+
+  private hasRunningSpawns(): boolean {
+    const sessionId = this.getSessionIdForChannel();
+    const spawned = listSpawnedHistory(this.cwd, sessionId);
+    return spawned.some((a) => a.status === 'running');
   }
 
   private startProgressRefresh(): void {
     if (this.progressTimer) return;
-    this.progressTimer = setInterval(() => {
-      if (hasLiveWorkers(this.cwd)) {
+    this.progressTimer = setInterval(async () => {
+      const changed = await syncFromRemote(this.cwd);
+      if (changed || hasLiveWorkers(this.cwd)) {
         this.tui.requestRender();
-      } else {
+      }
+      if (!hasLiveWorkers(this.cwd) && !this.hasRunningSpawns()) {
         this.stopProgressRefresh();
       }
     }, 1000);

@@ -1,4 +1,6 @@
-import type { AgentProgress } from "./progress.js";
+import * as http from 'node:http';
+import { normalizeCwd } from '../store/shared.js';
+import type { AgentProgress } from './progress.js';
 
 export interface LiveWorkerInfo {
   cwd: string;
@@ -39,7 +41,7 @@ function progressEqual(a: AgentProgress, b: AgentProgress): boolean {
 // Check if worker info has meaningfully changed
 function workerInfoChanged(
   existing: LiveWorkerInfo | undefined,
-  newInfo: Omit<LiveWorkerInfo, "cwd">
+  newInfo: Omit<LiveWorkerInfo, 'cwd'>
 ): boolean {
   if (!existing) return true;
   if (existing.name !== newInfo.name) return true;
@@ -48,7 +50,11 @@ function workerInfoChanged(
   return false;
 }
 
-export function updateLiveWorker(cwd: string, taskId: string, info: Omit<LiveWorkerInfo, "cwd">): void {
+export function updateLiveWorker(
+  cwd: string,
+  taskId: string,
+  info: Omit<LiveWorkerInfo, 'cwd'>
+): void {
   const key = getWorkerKey(cwd, taskId);
   const existing = liveWorkers.get(key);
 
@@ -124,4 +130,57 @@ export function onLiveWorkersChanged(fn: () => void): () => void {
 
 function notifyListeners(): void {
   for (const fn of listeners) fn();
+}
+
+export async function syncFromRemote(cwd?: string): Promise<boolean> {
+  const port = Number(process.env.PI_MESSENGER_PORT ?? 9877);
+  const url = `http://127.0.0.1:${port}/live-workers`;
+  let body: string;
+  try {
+    body = await new Promise<string>((resolve, reject) => {
+      const headers: Record<string, string> = {};
+      if (cwd) headers['x-caller-cwd'] = normalizeCwd(cwd);
+      const req = http.get(url, { headers, timeout: 2000 }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('timeout'));
+      });
+    });
+  } catch {
+    return false;
+  }
+  let parsed: { ok?: boolean; workers?: Array<Omit<LiveWorkerInfo, 'cwd'>> };
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return false;
+  }
+  if (!parsed.ok || !Array.isArray(parsed.workers)) return false;
+  const effectiveCwd = cwd ? normalizeCwd(cwd) : undefined;
+  let changed = false;
+  const remoteKeys = new Set<string>();
+  for (const w of parsed.workers) {
+    const workerCwd = (w as any).cwd || effectiveCwd || '';
+    const key = getWorkerKey(workerCwd, w.taskId);
+    remoteKeys.add(key);
+    const existing = liveWorkers.get(key);
+    if (workerInfoChanged(existing, w)) {
+      liveWorkers.set(key, { ...w, cwd: workerCwd } as LiveWorkerInfo);
+      changed = true;
+    }
+  }
+  for (const [key, info] of liveWorkers.entries()) {
+    if (effectiveCwd && info.cwd !== effectiveCwd) continue;
+    if (!remoteKeys.has(key)) {
+      liveWorkers.delete(key);
+      changed = true;
+    }
+  }
+  if (changed) throttledNotify();
+  return changed;
 }
