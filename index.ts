@@ -132,10 +132,22 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
   let latestCtx: ExtensionContext | null = null;
   let statusHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
+  /** Guard against stale extension contexts after session replacement/reload. */
+  function safeUpdateStatus(ctx: ExtensionContext | null): void {
+    if (!ctx) return;
+    try {
+      // Accessing ctx.hasUI throws if the context is stale
+      void ctx.hasUI;
+      updateStatus(ctx);
+    } catch {
+      // Stale context — skip this update; the next session_start will set a fresh ctx
+    }
+  }
+
   function startStatusHeartbeat(): void {
     if (statusHeartbeatTimer) return;
     statusHeartbeatTimer = setInterval(() => {
-      if (latestCtx) updateStatus(latestCtx);
+      safeUpdateStatus(latestCtx);
     }, STATUS_HEARTBEAT_MS);
   }
 
@@ -146,7 +158,7 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
   }
 
   onLiveWorkersChanged(() => {
-    if (latestCtx) updateStatus(latestCtx);
+    safeUpdateStatus(latestCtx);
     overlayTui?.requestRender();
   });
 
@@ -164,7 +176,7 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
       if (!state.registered) return;
       const cwd = process.cwd();
       const result = await syncFromRemote(cwd);
-      if (result.changed && latestCtx) updateStatus(latestCtx);
+      if (result.changed) safeUpdateStatus(latestCtx);
       overlayTui?.requestRender();
 
       if (result.removedWorkers.length === 0) return;
