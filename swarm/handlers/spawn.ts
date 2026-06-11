@@ -255,10 +255,16 @@ function spawnCreate(
         state.currentChannel
       );
 
-      return result(`🚀 Spawned ${record.name} (${record.id}) as ${roleLabel}.`, {
-        mode: 'spawn',
-        agent: record,
-      });
+      return result(
+        `🚀 Spawned ${record.name} (${record.id}) as ${roleLabel}. ` +
+          `The agent runs asynchronously. Do NOT use sleep or polling loops to wait for it — ` +
+          `you will be notified automatically when it completes. ` +
+          `If you have other work, continue now. If not, end your turn.`,
+        {
+          mode: 'spawn',
+          agent: record,
+        }
+      );
     } catch (err) {
       return result(`Error: ${err instanceof Error ? err.message : String(err)}`, {
         mode: 'spawn',
@@ -297,8 +303,14 @@ function spawnCreate(
     state.currentChannel
   );
 
-  return result(`🚀 Spawned ${record.name} (${record.id}) as ${roleLabel}.`, {
-    mode: 'spawn',
-    agent: record,
-  });
+  return result(
+    `🚀 Spawned ${record.name} (${record.id}) as ${roleLabel}. ` +
+      `The agent runs asynchronously. Do NOT use sleep or polling loops to wait for it — ` +
+      `you will be notified automatically when it completes. ` +
+      `If you have other work, continue now. If not, end your turn.`,
+    {
+      mode: 'spawn',
+      agent: record,
+    }
+  );
 }
