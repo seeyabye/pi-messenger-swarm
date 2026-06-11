@@ -46,7 +46,10 @@ export type FeedEventType =
   | 'plan.done'
   | 'plan.cancel'
   | 'plan.failed'
-  | 'stuck';
+  | 'stuck'
+  | 'spawn.completed'
+  | 'spawn.failed'
+  | 'spawn.stopped';
 
 export interface FeedEvent {
   ts: string;
@@ -280,6 +283,9 @@ const SWARM_EVENT_TYPES = new Set<FeedEventType>([
   'plan.done',
   'plan.cancel',
   'plan.failed',
+  'spawn.completed',
+  'spawn.failed',
+  'spawn.stopped',
 ]);
 
 export function formatFeedLine(event: FeedEvent): string {
@@ -390,6 +396,15 @@ export function formatFeedLine(event: FeedEvent): string {
       break;
     case 'stuck':
       line += ' appears stuck';
+      break;
+    case 'spawn.completed':
+      line += withPreview(` completed spawn ${target}`);
+      break;
+    case 'spawn.failed':
+      line += withPreview(` spawn ${target} failed`);
+      break;
+    case 'spawn.stopped':
+      line += withPreview(` stopped spawn ${target}`);
       break;
     default:
       line += ` ${sanitized.type}`;

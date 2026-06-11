@@ -33,8 +33,8 @@ import { MessengerOverlay, type OverlayCallbacks } from './overlay/component.js'
 import { MessengerConfigOverlay } from './overlay/config-overlay.js';
 import { loadConfig, matchesAutoRegisterPath, type MessengerConfig } from './config.js';
 import { logFeedEvent, pruneFeed } from './feed/index.js';
-import { onLiveWorkersChanged } from './swarm/live-progress.js';
-import { stopAllSpawned } from './swarm/spawn.js';
+import { onLiveWorkersChanged, syncFromRemote } from './swarm/live-progress.js';
+import { listSpawnedHistory, stopAllSpawned } from './swarm/spawn.js';
 import { createDeliverMessage } from './extension/deliver-message.js';
 import { createStatusController } from './extension/status.js';
 import { createActivityTracker } from './extension/activity.js';
@@ -149,6 +149,85 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
     if (latestCtx) updateStatus(latestCtx);
     overlayTui?.requestRender();
   });
+
+  // Spawn completion polling: detect when spawned agents complete
+  // and notify the main agent via pi.sendMessage with triggerTurn.
+  // This runs independently of the overlay so the coordinator agent
+  // is always notified even when the overlay is closed.
+  const SPAWN_POLL_MS = 3_000;
+  let spawnPollTimer: ReturnType<typeof setInterval> | null = null;
+  const notifiedSpawnCompletions = new Set<string>();
+
+  function startSpawnCompletionPoll(): void {
+    if (spawnPollTimer) return;
+    spawnPollTimer = setInterval(async () => {
+      if (!state.registered) return;
+      const cwd = process.cwd();
+      const result = await syncFromRemote(cwd);
+      if (result.changed && latestCtx) updateStatus(latestCtx);
+      overlayTui?.requestRender();
+
+      if (result.removedWorkers.length === 0) return;
+
+      const sessionId = getEffectiveSessionId(cwd, state);
+      const spawned = listSpawnedHistory(cwd, sessionId);
+
+      for (const removed of result.removedWorkers) {
+        // Avoid duplicate notifications for the same completion
+        const notifKey = `${removed.taskId}::${removed.name}`;
+        if (notifiedSpawnCompletions.has(notifKey)) continue;
+        notifiedSpawnCompletions.add(notifKey);
+
+        // Find the completed agent's record
+        const agent = spawned.find(
+          (a) => a.name === removed.name && (a.taskId === removed.taskId || a.id === removed.taskId)
+        );
+
+        if (!agent || agent.status === 'running') continue;
+
+        const statusLabel =
+          agent.status === 'completed'
+            ? 'completed'
+            : agent.status === 'failed'
+              ? 'failed'
+              : 'stopped';
+
+        const taskInfo = agent.taskId ? ` (task: ${agent.taskId})` : '';
+        const summary =
+          agent.status === 'completed'
+            ? agent.objective || 'Mission complete'
+            : agent.error || 'Unknown error';
+
+        pi.sendMessage(
+          {
+            customType: 'spawn_completion',
+            content:
+              `🔔 Spawned agent ${agent.name} (${agent.role}) ${statusLabel}${taskInfo}. ` +
+              `Summary: ${summary}. ` +
+              (agent.taskId
+                ? `Check output: pi-messenger-swarm task show ${agent.taskId}`
+                : `Use pi-messenger-swarm spawn history for details.`),
+            display: true,
+          },
+          { triggerTurn: true }
+        );
+      }
+
+      // Prune old completion keys to prevent unbounded growth
+      if (notifiedSpawnCompletions.size > 200) {
+        const entries = Array.from(notifiedSpawnCompletions);
+        for (let i = 0; i < entries.length - 100; i++) {
+          notifiedSpawnCompletions.delete(entries[i]);
+        }
+      }
+    }, SPAWN_POLL_MS);
+  }
+
+  function stopSpawnCompletionPoll(): void {
+    if (!spawnPollTimer) return;
+    clearInterval(spawnPollTimer);
+    spawnPollTimer = null;
+  }
 
   function sendRegistrationContext(ctx: ExtensionContext): void {
     const folder = extractFolder(process.cwd());
@@ -300,6 +379,7 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
   pi.on('session_start', async (_event, ctx) => {
     latestCtx = ctx;
     startStatusHeartbeat();
+    startSpawnCompletionPoll();
     state.isHuman = ctx.hasUI;
     try {
       fs.rmSync(join(getAgentDir(), 'messenger/feed.jsonl'), { force: true });
@@ -409,6 +489,7 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
     const cwd = process.cwd();
     stopAllSpawned(cwd); // In-process safety net for extension-spawned agents
     stopStatusHeartbeat();
+    stopSpawnCompletionPoll();
     // Do NOT send /quit to the harness server on session shutdown.
     // The harness is a long-lived daemon (detached + unref'd) designed to
     // survive across pi sessions. Killing it destroys all spawned subagents

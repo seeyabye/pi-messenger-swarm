@@ -132,7 +132,13 @@ function notifyListeners(): void {
   for (const fn of listeners) fn();
 }
 
-export async function syncFromRemote(cwd?: string): Promise<boolean> {
+export interface SyncFromRemoteResult {
+  changed: boolean;
+  /** Worker keys that were removed (spawn completed/failed/stopped) */
+  removedWorkers: Array<{ taskId: string; name: string }>;
+}
+
+export async function syncFromRemote(cwd?: string): Promise<SyncFromRemoteResult> {
   const port = Number(process.env.PI_MESSENGER_PORT ?? 9877);
   const url = `http://127.0.0.1:${port}/live-workers`;
   let body: string;
@@ -152,18 +158,19 @@ export async function syncFromRemote(cwd?: string): Promise<boolean> {
       });
     });
   } catch {
-    return false;
+    return { changed: false, removedWorkers: [] };
   }
   let parsed: { ok?: boolean; workers?: Array<Omit<LiveWorkerInfo, 'cwd'>> };
   try {
     parsed = JSON.parse(body);
   } catch {
-    return false;
+    return { changed: false, removedWorkers: [] };
   }
-  if (!parsed.ok || !Array.isArray(parsed.workers)) return false;
+  if (!parsed.ok || !Array.isArray(parsed.workers)) return { changed: false, removedWorkers: [] };
   const effectiveCwd = cwd ? normalizeCwd(cwd) : undefined;
   let changed = false;
   const remoteKeys = new Set<string>();
+  const removedWorkers: Array<{ taskId: string; name: string }> = [];
   for (const w of parsed.workers) {
     const workerCwd = (w as any).cwd || effectiveCwd || '';
     const key = getWorkerKey(workerCwd, w.taskId);
@@ -177,10 +184,11 @@ export async function syncFromRemote(cwd?: string): Promise<boolean> {
   for (const [key, info] of liveWorkers.entries()) {
     if (effectiveCwd && info.cwd !== effectiveCwd) continue;
     if (!remoteKeys.has(key)) {
+      removedWorkers.push({ taskId: info.taskId, name: info.name });
       liveWorkers.delete(key);
       changed = true;
     }
   }
   if (changed) throttledNotify();
-  return changed;
+  return { changed, removedWorkers };
 }

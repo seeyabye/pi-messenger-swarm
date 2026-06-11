@@ -7,6 +7,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { generateMemorableName } from '../lib.js';
 import { createProgress, parseJsonlLine, updateProgress } from './progress.js';
+import { logFeedEvent } from '../feed/index.js';
 import { removeLiveWorker, updateLiveWorker } from './live-progress.js';
 import type { SpawnRequest, SpawnedAgent } from './types.js';
 import { formatRoleLabel } from './labels.js';
@@ -267,6 +268,7 @@ interface SpawnState {
   startMs: number;
   buffer: string;
   stderr: string;
+  channel?: string;
 }
 
 function discoverSkills(cwd: string): string[] {
@@ -444,6 +446,23 @@ function attachHandlers(
     });
 
     generateAgentFile(state.cwd, sessionId, runtime.record);
+
+    // Channel callback: announce spawn completion on the channel feed
+    // so the coordinator agent (and any other listener) is notified.
+    if (state.channel) {
+      const feedType =
+        status === 'completed'
+          ? ('spawn.completed' as const)
+          : status === 'failed'
+            ? ('spawn.failed' as const)
+            : ('spawn.stopped' as const);
+      const taskLabel = runtime.record.taskId || state.id;
+      const preview =
+        status === 'completed'
+          ? runtime.record.objective || undefined
+          : runtime.record.error || undefined;
+      logFeedEvent(state.cwd, state.name, feedType, taskLabel, preview, state.channel);
+    }
   });
 }
 
@@ -494,6 +513,7 @@ export function spawnSubagent(
     status: 'running',
     startedAt,
     sessionId,
+    channel: inheritedChannel,
   };
   record.systemPrompt = systemPrompt;
 
@@ -525,6 +545,7 @@ export function spawnSubagent(
     startMs: Date.now(),
     buffer: '',
     stderr: '',
+    channel: inheritedChannel,
   };
 
   const args = createArgs(spawnState, agentFileModel);
@@ -1044,6 +1065,10 @@ function startDetachedPolling(): void {
           }
         }
 
+        const channel = runtime.record.channel;
+        const agentName = runtime.record.name;
+        const taskLabel = runtime.record.taskId || id;
+
         if (!alreadyFinalized) {
           // No prior terminal event — write our own
           runtime.record = {
@@ -1069,6 +1094,21 @@ function startDetachedPolling(): void {
             });
             generateAgentFile(runtime.record.cwd, sessionId, runtime.record);
           }
+        }
+
+        // Channel callback for detached runtime completion
+        if (channel) {
+          const feedType =
+            runtime.record.status === 'completed'
+              ? ('spawn.completed' as const)
+              : runtime.record.status === 'stopped'
+                ? ('spawn.stopped' as const)
+                : ('spawn.failed' as const);
+          const preview =
+            runtime.record.status === 'completed'
+              ? runtime.record.objective || undefined
+              : runtime.record.error || undefined;
+          logFeedEvent(runtime.record.cwd, agentName, feedType, taskLabel, preview, channel);
         }
 
         removeLiveWorker(runtime.record.cwd, runtime.record.taskId || spawnLiveKey(id));

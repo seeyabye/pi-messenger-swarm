@@ -143,8 +143,8 @@ export class MessengerOverlay implements Component, Focusable {
   private startProgressRefresh(): void {
     if (this.progressTimer) return;
     this.progressTimer = setInterval(async () => {
-      const changed = await syncFromRemote(this.cwd);
-      if (changed || hasLiveWorkers(this.cwd)) {
+      const result = await syncFromRemote(this.cwd);
+      if (result.changed || hasLiveWorkers(this.cwd)) {
         this.tui.requestRender();
       }
       if (!hasLiveWorkers(this.cwd) && !this.hasRunningSpawns()) {
