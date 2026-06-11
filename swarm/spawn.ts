@@ -13,9 +13,6 @@ import type { SpawnRequest, SpawnedAgent } from './types.js';
 import { formatRoleLabel } from './labels.js';
 import { loadAgentDefinition } from './agent-loader.js';
 
-/** Directory for spawn result files — watched by the extension for completion callbacks. */
-export const SPAWN_RESULTS_DIR = path.join(getAgentDir(), 'messenger', 'spawn-results');
-
 const AGENT_END_DESPAWN_MS = 10 * 60 * 1000;
 
 interface SpawnRuntime {
@@ -67,36 +64,6 @@ function agentFilePath(cwd: string, sessionId: string, name: string, id: string)
 
 function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-/** Write a spawn result file so the extension (file watcher) can detect completion. */
-function writeSpawnResult(record: SpawnedAgent): void {
-  try {
-    ensureDir(SPAWN_RESULTS_DIR);
-    const resultPath = path.join(SPAWN_RESULTS_DIR, `${record.id}.json`);
-    fs.writeFileSync(
-      resultPath,
-      JSON.stringify({
-        id: record.id,
-        agent: record.name,
-        role: record.role,
-        success: record.status === 'completed',
-        status: record.status,
-        exitCode: record.exitCode,
-        taskId: record.taskId,
-        sessionId: record.sessionId,
-        channel: record.channel,
-        projectCwd: record.projectCwd,
-        cwd: record.cwd,
-        objective: record.objective,
-        error: record.error,
-        endedAt: record.endedAt,
-      }),
-      'utf-8'
-    );
-  } catch {
-    // Best effort
-  }
 }
 
 function appendEvent(cwd: string, sessionId: string, event: SpawnEvent): void {
@@ -481,9 +448,6 @@ function attachHandlers(
     });
 
     generateAgentFile(state.cwd, sessionId, runtime.record);
-
-    // Write result file for the extension's file watcher
-    writeSpawnResult(runtime.record);
 
     // Channel callback: announce spawn completion on the channel feed
     // so the coordinator agent (and any other listener) is notified.
@@ -1134,7 +1098,6 @@ function startDetachedPolling(): void {
               },
             });
             generateAgentFile(runtime.record.cwd, sessionId, runtime.record);
-            writeSpawnResult(runtime.record);
           }
         }
 
