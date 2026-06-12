@@ -237,7 +237,7 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
                 : `Use pi-messenger-swarm spawn history for details.`),
             display: true,
           },
-          { triggerTurn: !overlayHandle || overlayHandle.isHidden() }
+          { triggerTurn: true }
         );
       }
 
