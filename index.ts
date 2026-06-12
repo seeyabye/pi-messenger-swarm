@@ -229,6 +229,10 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
 
       for (const agent of spawned) {
         if (agent.status === 'running') continue;
+        // Only notify about agents that belong to THIS project.
+        // Agents from other projects may exist in the same agents directory
+        // when the harness server's cwd resolution was incorrect.
+        if (agent.projectCwd && agent.projectCwd !== cwd) continue;
 
         // Deduplicate by spawn id
         const notifKey = agent.id;
