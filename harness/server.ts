@@ -562,16 +562,16 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     );
 
     // Determine the project cwd for this request.
-    // Priority: x-caller-cwd header > registration file's cwd > PI_MESSENGER_CWD env > server process.cwd()
-    // This ensures each project gets its own dirs (channels, registry) and config
-    // even when multiple projects share the same harness server.
+    // Priority: x-caller-cwd header > PI_MESSENGER_CWD env > server process.cwd()
+    // The caller always knows its current project, so x-caller-cwd wins.
+    // Registration cwd is only used as fallback when no header is present.
     let projectCwd = callerCwd
       ? normalizeCwd(callerCwd)
       : normalizeCwd(process.env.PI_MESSENGER_CWD ?? process.cwd());
     // Pre-resolve state from the startup dirs to read the registration's cwd
     const preState = resolveAgentState(startupDirs, callerPid, agentName, channelHint, sessionId);
-    // If the matched registration has a cwd, prefer it (it reflects the agent's project)
-    if (preState.state.registered && preState.resolvedCwd) {
+    // Use the registration's cwd ONLY as fallback when caller didn't send one
+    if (!callerCwd && preState.state.registered && preState.resolvedCwd) {
       projectCwd = preState.resolvedCwd;
     }
     // Re-resolve with project-specific dirs and config
