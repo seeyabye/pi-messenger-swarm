@@ -32,7 +32,7 @@ import { syncChannelStateFromDisk } from './store/agents.js';
 import { MessengerOverlay, type OverlayCallbacks } from './overlay/component.js';
 import { MessengerConfigOverlay } from './overlay/config-overlay.js';
 import { loadConfig, matchesAutoRegisterPath, type MessengerConfig } from './config.js';
-import { logFeedEvent, pruneFeed } from './feed/index.js';
+import { logFeedEvent, pruneFeed, readFeedEvents } from './feed/index.js';
 import { onLiveWorkersChanged, syncFromRemote } from './swarm/live-progress.js';
 import { listSpawnedHistory, stopAllSpawned } from './swarm/spawn.js';
 import { createDeliverMessage } from './extension/deliver-message.js';
@@ -191,6 +191,27 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
               notifiedSpawnCompletions.add(agent.id);
             }
           }
+          // Also prime existing messages addressed to this agent
+          if (state.agentName) {
+            const channels =
+              state.joinedChannels.length > 0
+                ? state.joinedChannels
+                : state.currentChannel
+                  ? [state.currentChannel]
+                  : [];
+            for (const channelId of channels) {
+              try {
+                const events = readFeedEvents(cwd, 50, channelId);
+                for (const event of events) {
+                  if (event.type === 'message' && event.target === state.agentName) {
+                    notifiedSpawnCompletions.add(`msg:${event.ts}:${event.agent}:${channelId}`);
+                  }
+                }
+              } catch {
+                // Best effort
+              }
+            }
+          }
         } catch {
           // Best effort
         }
@@ -246,6 +267,50 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
         const entries = Array.from(notifiedSpawnCompletions);
         for (let i = 0; i < entries.length - 100; i++) {
           notifiedSpawnCompletions.delete(entries[i]);
+        }
+      }
+
+      // Check for unread messages addressed to this agent
+      // and push-notify so the agent can respond immediately.
+      if (state.agentName) {
+        const channels =
+          state.joinedChannels.length > 0
+            ? state.joinedChannels
+            : state.currentChannel
+              ? [state.currentChannel]
+              : [];
+        for (const channelId of channels) {
+          let events: {
+            ts: string;
+            agent: string;
+            type: string;
+            target?: string;
+            preview?: string;
+          }[];
+          try {
+            events = readFeedEvents(cwd, 50, channelId);
+          } catch {
+            continue;
+          }
+          for (const event of events) {
+            if (event.type !== 'message') continue;
+            if (event.target !== state.agentName) continue;
+            // Deduplicate by timestamp + sender
+            const msgKey = `msg:${event.ts}:${event.agent}:${channelId}`;
+            if (notifiedSpawnCompletions.has(msgKey)) continue;
+            notifiedSpawnCompletions.add(msgKey);
+
+            pi.sendMessage(
+              {
+                customType: 'swarm_message',
+                content:
+                  `📩 Message from ${event.agent} on #${channelId}: ${event.preview || '(no content)'}. ` +
+                  `Read full context: pi-messenger-swarm feed --limit 20`,
+                display: true,
+              },
+              { triggerTurn: true }
+            );
+          }
         }
       }
     }, SPAWN_POLL_MS);
