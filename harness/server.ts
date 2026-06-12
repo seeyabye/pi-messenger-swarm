@@ -46,8 +46,11 @@ import {
 
 function getMessengerDirs(cwd?: string): Dirs {
   const effectiveCwd = cwd ?? process.env.PI_MESSENGER_CWD ?? process.cwd();
+  // When a specific cwd is provided (per-request), always derive dirs from
+  // that cwd. PI_MESSENGER_DIR is only used as fallback for the server's
+  // startup dirs (when no cwd is given).
   const baseDir =
-    process.env.PI_MESSENGER_DIR ||
+    (cwd ? undefined : process.env.PI_MESSENGER_DIR) ||
     (process.env.PI_MESSENGER_GLOBAL === '1'
       ? join(getAgentDir(), 'messenger')
       : join(normalizeCwd(effectiveCwd), '.pi/messenger'));
