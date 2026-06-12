@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { AgentRegistration, Dirs, MessengerState } from '../lib.js';
 import { isProcessAlive } from '../lib.js';
 import {
@@ -123,7 +124,25 @@ export function getEffectiveSessionId(cwd: string, state: MessengerState): strin
       return channelSessionId;
     }
   }
-  return state.contextSessionId ?? '';
+  if (state.contextSessionId) {
+    return state.contextSessionId;
+  }
+  // Disk-based fallback: read the session-id file written by the extension
+  // during session_start. This ensures the poll works even when
+  // autoRegister is false (state.currentChannel/contextSessionId not set).
+  try {
+    const baseDir =
+      process.env.PI_MESSENGER_DIR ||
+      (process.env.PI_MESSENGER_GLOBAL === '1'
+        ? join(getAgentDir(), 'messenger')
+        : join(cwd, '.pi/messenger'));
+    const sessionFilePath = join(baseDir, 'session-id');
+    const id = fs.readFileSync(sessionFilePath, 'utf-8').trim();
+    if (id) return id;
+  } catch {
+    // File may not exist yet
+  }
+  return '';
 }
 
 export function ensureStateChannels(
