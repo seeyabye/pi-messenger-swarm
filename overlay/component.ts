@@ -764,11 +764,8 @@ export class MessengerOverlay implements Component, Focusable {
     }
 
     if (isIdle && this.sawIncompleteWork && !this.completionTimer && !this.completionDismissed) {
-      setNotification(this.viewState, this.tui, true, 'All tasks complete! Closing in 3s...');
-      this.completionTimer = setTimeout(() => {
-        this.completionTimer = null;
-        this.done(this.generateSnapshot());
-      }, 3000);
+      setNotification(this.viewState, this.tui, true, 'All tasks complete!');
+      this.completionDismissed = true;
     }
   }
 
