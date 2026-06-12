@@ -137,10 +137,10 @@ interface RegistrationFile {
   joinedChannels?: string[];
 }
 
-function readRegistrations(dirs: Dirs): RegistrationFile[] {
+function readRegistrations(dirs: Dirs, projectCwd?: string): RegistrationFile[] {
   try {
     const files = fs.readdirSync(dirs.registry).filter((f) => f.endsWith('.json'));
-    return files
+    const regs = files
       .map((f) => {
         try {
           return JSON.parse(fs.readFileSync(join(dirs.registry, f), 'utf-8'));
@@ -149,6 +149,14 @@ function readRegistrations(dirs: Dirs): RegistrationFile[] {
         }
       })
       .filter((r): r is RegistrationFile => r !== null);
+    // Filter out stale cross-project registrations: a registration whose
+    // cwd doesn't belong to this project was written here due to a previous
+    // cwd resolution bug. Skip it so the agent gets a fresh identity.
+    if (projectCwd) {
+      const normalized = normalizeCwd(projectCwd);
+      return regs.filter((r) => !r.cwd || normalizeCwd(r.cwd) === normalized);
+    }
+    return regs;
   } catch {
     return [];
   }
@@ -174,7 +182,8 @@ function resolveAgentState(
   callerPid?: number,
   agentName?: string,
   channelHint?: string,
-  requestSessionId?: string
+  requestSessionId?: string,
+  projectCwd?: string
 ): {
   state: MessengerState;
   resolvedCwd: string;
@@ -191,7 +200,7 @@ function resolveAgentState(
   let joinedChannels: string[] = [];
   let sessionIdFromDisk = '';
 
-  const regs = readRegistrations(dirs);
+  const regs = readRegistrations(dirs, projectCwd);
 
   // Strategy 1: match by agent name (robust — env-var based)
   if (agentName) {
@@ -569,7 +578,14 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       ? normalizeCwd(callerCwd)
       : normalizeCwd(process.env.PI_MESSENGER_CWD ?? process.cwd());
     // Pre-resolve state from the startup dirs to read the registration's cwd
-    const preState = resolveAgentState(startupDirs, callerPid, agentName, channelHint, sessionId);
+    const preState = resolveAgentState(
+      startupDirs,
+      callerPid,
+      agentName,
+      channelHint,
+      sessionId,
+      projectCwd
+    );
     // Use the registration's cwd ONLY as fallback when caller didn't send one
     if (!callerCwd && preState.state.registered && preState.resolvedCwd) {
       projectCwd = preState.resolvedCwd;
@@ -584,7 +600,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       callerPid,
       agentName,
       channelHint,
-      sessionId
+      sessionId,
+      projectCwd
     );
     // Use session ID from header (written by extension to .pi/messenger/session-id)
     // if available, otherwise fall back to the state's contextSessionId (from disk).
