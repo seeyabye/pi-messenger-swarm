@@ -181,17 +181,17 @@ pi-messenger-swarm '{ "action": "spawn", "role": "Researcher", "message": "Analy
 
 The swarm is self-organizing. Your role is participant, not manager.
 
-### Pull-based messaging, push-based spawn completion
+### Pull-based messaging, push-based spawn completion and messages
 
-Messages and state changes are written to the channel feed. Nobody pushes messages to you — you must read the feed yourself between turns.
+Messages and state changes are written to the channel feed. For general state (task updates, joins, edits), you must read the feed yourself between turns.
 
 ```bash
 pi-messenger-swarm feed --limit 10
 ```
 
-This is kafka-like: channels are durable logs, agents subscribe by reading. If a teammate sent you a message, you'll find it in the feed. If you don't read it, it sits there until you do.
+This is kafka-like: channels are durable logs, agents subscribe by reading. If you don't read the feed, state changes sit there until you do.
 
-**Exception: spawn completion is push-based.** When a spawned agent finishes, you are automatically notified — no polling or feed reading required.
+**Exception: direct messages and spawn completion are push-based.** When someone sends you a message via `pi-messenger-swarm send YourName "..."`, you are automatically notified — no polling required. Similarly, when a spawned agent finishes, you receive a `spawn_completion` notification automatically.
 
 Good pattern: read the feed at decision points, then act.
 
