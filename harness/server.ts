@@ -188,9 +188,12 @@ function resolveAgentState(
   state: MessengerState;
   resolvedCwd: string;
 } {
-  // Default to the project cwd (set by the extension via PI_MESSENGER_CWD
-  // when spawning the harness). Fall back to process.cwd() if not available.
-  let resolvedCwd = normalizeCwd(process.env.PI_MESSENGER_CWD ?? process.cwd());
+  // Default resolvedCwd to the project's cwd (derived from dirs.base or
+  // the explicit projectCwd parameter). Fall back to PI_MESSENGER_CWD only
+  // if no project context is available.
+  let resolvedCwd = projectCwd
+    ? normalizeCwd(projectCwd)
+    : normalizeCwd(process.env.PI_MESSENGER_CWD ?? process.cwd());
   const gitBranch = getGitBranch(resolvedCwd);
 
   let registered = false;
