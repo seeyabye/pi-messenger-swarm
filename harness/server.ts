@@ -18,7 +18,6 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { join } from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +33,7 @@ import {
   patchChannelSessionId,
 } from '../channel.js';
 import { ensureDirSync, getGitBranch, normalizeCwd } from '../store/shared.js';
+import { resolveMessengerDirs } from './paths.js';
 import {
   stopAllSpawned,
   forceKillAllSpawned,
@@ -44,20 +44,11 @@ import {
   getRunningSpawnCount,
 } from '../swarm/spawn.js';
 
-function getMessengerDirs(cwd?: string): Dirs {
-  const effectiveCwd = cwd ?? process.env.PI_MESSENGER_CWD ?? process.cwd();
-  // When a specific cwd is provided (per-request), always derive dirs from
-  // that cwd. PI_MESSENGER_DIR is only used as fallback for the server's
-  // startup dirs (when no cwd is given).
-  const baseDir =
-    (cwd ? undefined : process.env.PI_MESSENGER_DIR) ||
-    (process.env.PI_MESSENGER_GLOBAL === '1'
-      ? join(getAgentDir(), 'messenger')
-      : join(normalizeCwd(effectiveCwd), '.pi/messenger'));
-  return {
-    base: baseDir,
-    registry: join(baseDir, 'registry'),
-  };
+function getMessengerDirs(cwd?: string, overrideBase?: string): Dirs {
+  // Delegates to the pure, unit-tested resolveMessengerDirs() in paths.ts.
+  // See that module for the resolution-priority rationale (overrideBase >
+  // startup-only PI_MESSENGER_DIR > global > cwd-scoped).
+  return resolveMessengerDirs({ cwd, overrideBase });
 }
 
 // Bootstrap dirs from the server's startup cwd for health checks and
@@ -94,11 +85,14 @@ if (orphanCount > 0) {
 // Per-request directory cache: cwd → Dirs (avoids recomputing on every request).
 const dirsCache = new Map<string, Dirs>();
 
-function dirsForCwd(cwd: string): Dirs {
-  const cached = dirsCache.get(cwd);
+function dirsForCwd(cwd: string, overrideBase?: string): Dirs {
+  // Cache key includes overrideBase so two callers from the same cwd but with
+  // different explicit PI_MESSENGER_DIR overrides don't share a cached entry.
+  const cacheKey = overrideBase ? `${cwd}\0${overrideBase}` : cwd;
+  const cached = dirsCache.get(cacheKey);
   if (cached) return cached;
-  const dirs = getMessengerDirs(cwd);
-  dirsCache.set(cwd, dirs);
+  const dirs = getMessengerDirs(cwd, overrideBase);
+  dirsCache.set(cacheKey, dirs);
 
   // Ensure dirs exist for this project too
   ensureDirSync(dirs.registry);
@@ -571,6 +565,10 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     // The CLI sends its cwd so the server can resolve the correct project
     // even when multiple projects share the same harness server.
     const callerCwd = header(req, 'x-caller-cwd');
+    // The CLI sends an explicit data-directory override (from a user-set
+    // PI_MESSENGER_DIR) via this header. When present it wins over the
+    // cwd-derived .pi/messenger path — see getMessengerDirs().
+    const messengerDirOverride = header(req, 'x-messenger-dir');
 
     serverLog(
       `action: ${action} agent_name: ${agentName || '(none)'} caller_pid: ${callerPid || '(none)'} session: ${sessionId || '(none)'} channel: ${channelHint || '(auto)'} caller_cwd: ${callerCwd || '(none)'}`
@@ -597,7 +595,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       projectCwd = preState.resolvedCwd;
     }
     // Re-resolve with project-specific dirs and config
-    const dirs = dirsForCwd(projectCwd);
+    const dirs = dirsForCwd(projectCwd, messengerDirOverride || undefined);
     const routerConfig = routerConfigForCwd(projectCwd);
 
     // Build per-request state from disk

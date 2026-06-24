@@ -282,6 +282,17 @@ function agentHeaders(): Record<string, string> {
   // for already-registered agents.
   if (process.env.PI_MESSENGER_CHANNEL)
     headers['x-messenger-channel'] = process.env.PI_MESSENGER_CHANNEL;
+
+  // When the user explicitly sets PI_MESSENGER_DIR, forward it per-request so
+  // the harness server resolves the data directory from it instead of from the
+  // caller's cwd. This restores the documented "Data directory" override.
+  //
+  // The extension sets PI_MESSENGER_DIR only on the harness server process
+  // (via `cliPath --start`), never on this client/pi-session env, so presence
+  // here unambiguously means a user-set override — it cannot leak the
+  // extension's project dir into other projects' requests (the bug that
+  // 3dfb30d fixed by ignoring the server env per-request).
+  if (process.env.PI_MESSENGER_DIR) headers['x-messenger-dir'] = process.env.PI_MESSENGER_DIR;
   return headers;
 }
 
