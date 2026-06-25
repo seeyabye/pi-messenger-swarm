@@ -130,12 +130,25 @@ export function getEffectiveSessionId(cwd: string, state: MessengerState): strin
   // Disk-based fallback: read the session-id file written by the extension
   // during session_start. This ensures the poll works even when
   // autoRegister is false (state.currentChannel/contextSessionId not set).
+  //
+  // Prefer the per-pid entry (sessions/<process.pid>) so concurrent pi
+  // sessions in the same project each resolve their own id; fall back to the
+  // singleton. This runs in-process, so process.pid is the current session.
   try {
     const baseDir =
       process.env.PI_MESSENGER_DIR ||
       (process.env.PI_MESSENGER_GLOBAL === '1'
         ? join(getAgentDir(), 'messenger')
         : join(cwd, '.pi/messenger'));
+    // Per-pid first (concurrent-session safe). A missing per-pid file is not
+    // an error — swallow it so the singleton fallback below still runs.
+    const perPidPath = join(baseDir, 'sessions', String(process.pid));
+    try {
+      const perPid = fs.readFileSync(perPidPath, 'utf-8').trim();
+      if (perPid) return perPid;
+    } catch {
+      // no per-pid entry yet
+    }
     const sessionFilePath = join(baseDir, 'session-id');
     const id = fs.readFileSync(sessionFilePath, 'utf-8').trim();
     if (id) return id;

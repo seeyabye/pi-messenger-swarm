@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { MessengerState, Dirs, AgentMailMessage, NameThemeConfig } from '../lib.js';
+import { isProcessAlive } from '../lib.js';
 import { loadConfigCached, clearConfigCache, type MessengerConfig } from '../config.js';
 import { executeAction, type RouterConfig } from '../router.js';
 import {
@@ -43,6 +44,10 @@ import {
   clearPersistedRuntimes,
   getRunningSpawnCount,
 } from '../swarm/spawn.js';
+
+// How often the running-runtimes snapshot is persisted for crash recovery.
+// Cheap (a small JSON write) and bounds the crash-recovery staleness window.
+const RUNTIME_PERSIST_INTERVAL_MS = 15_000;
 
 function getMessengerDirs(cwd?: string, overrideBase?: string): Dirs {
   // Delegates to the pure, unit-tested resolveMessengerDirs() in paths.ts.
@@ -75,12 +80,30 @@ ensureDefaultNamedChannels(startupDirs);
 let restoredCount = restoreRuntimes(startupDirs.base);
 if (restoredCount > 0) {
   serverLog(`restored ${restoredCount} spawned agent runtime(s) from previous server instance`);
-  clearPersistedRuntimes(startupDirs.base);
 }
+// Always clear the persisted snapshot after restore (even when 0 were alive):
+// restoreRuntimes already tombstoned any dead entries, so leaving the file
+// would only cause the next start to re-process the same dead records
+// (harmless thanks to the don't-override-terminal guard, but redundant).
+clearPersistedRuntimes(startupDirs.base);
 const orphanCount = reconcileAndRestoreOrphans(startupDirs.base);
 if (orphanCount > 0) {
   serverLog(`reconnected ${orphanCount} orphaned agent(s) from event log`);
 }
+
+// Periodically persist running runtimes so a harness CRASH (no graceful
+// shutdown) still leaves a fresh spawn-runtimes.json for the next instance.
+// persistRuntimes writes ALL in-memory runtimes — across every project this
+// harness serves — to a single file, so the next restoreRuntimes() recovers
+// every project's agents (and finalizeDeadPersistedRuntime tombstones any
+// that exited in the meantime). Without this, a crash reattached only the
+// startup project (reconcileAndRestoreOrphans scans startupDirs alone) and
+// left other projects' event logs stuck at status 'running'.
+setInterval(() => {
+  if (getRunningSpawnCount() > 0) {
+    persistRuntimes(startupDirs.base);
+  }
+}, RUNTIME_PERSIST_INTERVAL_MS).unref();
 
 // Per-request directory cache: cwd → Dirs (avoids recomputing on every request).
 const dirsCache = new Map<string, Dirs>();
@@ -249,12 +272,21 @@ function resolveAgentState(
       joinedChannels = reg.joinedChannels || [];
       registered = true;
     } else {
-      // Multiple agents, no identity hint — pick most recently active by mtime
+      // Multiple agents, no identity hint — pick most recently active by
+      // mtime, but skip registrations whose owning pi process is dead so a
+      // stale session from a previous run isn't adopted (which would route
+      // this request onto that dead session's channel).
       let best: { name: string; mtime: number } | null = null;
-      for (const f of fs.readdirSync(dirs.registry).filter((f) => f.endsWith('.json'))) {
-        const stat = fs.statSync(join(dirs.registry, f));
-        if (!best || stat.mtimeMs > best.mtime) {
-          best = { name: f.replace(/\.json$/, ''), mtime: stat.mtimeMs };
+      for (const reg of regs) {
+        if (reg.pid && !isProcessAlive(reg.pid)) continue;
+        let mtime = 0;
+        try {
+          mtime = fs.statSync(join(dirs.registry, `${reg.name}.json`)).mtimeMs;
+        } catch {
+          continue;
+        }
+        if (!best || mtime > best.mtime) {
+          best = { name: reg.name, mtime };
         }
       }
       if (best) {
@@ -675,6 +707,22 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
       res.writeHead(200, TEXT_JSON);
       res.end(JSON.stringify({ ok: true, result: { text, details } }));
+
+      // A successful spawn adds a fresh runtime to the in-memory map. Persist
+      // immediately so a harness CRASH in the next ~15s (before the periodic
+      // timer) still recovers this agent. This closes the multi-project
+      // recovery gap: without it, a non-startup-project agent spawned moments
+      // before a crash would be absent from spawn-runtimes.json AND not scanned
+      // by reconcileAndRestoreOrphans (which covers startupDirs only), leaving
+      // its event log stuck at 'running'. persistRuntimes writes every
+      // in-memory runtime across all projects to one file.
+      if (action === 'spawn' && !(details as { error?: unknown }).error) {
+        try {
+          persistRuntimes(startupDirs.base);
+        } catch {
+          // Best effort — the periodic timer is a backstop
+        }
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       serverLog(`error: ${msg}`);

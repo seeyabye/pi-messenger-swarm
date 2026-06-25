@@ -193,6 +193,8 @@ This is kafka-like: channels are durable logs, agents subscribe by reading. If y
 
 **Exception: direct messages and spawn completion are push-based.** When someone sends you a message via `pi-messenger-swarm send YourName "..."`, you are automatically notified — no polling required. Similarly, when a spawned agent finishes, you receive a `spawn_completion` notification automatically.
 
+> **Offline messages:** push delivery only works while your pi session is running. Messages sent to you while your session was closed are persisted in the feed but are not retroactively pushed (the notification cursor is primed to the newest existing message on startup to avoid re-notifying old traffic). After (re)joining, run `pi-messenger-swarm feed --limit 20` to catch up on anything you missed.
+
 Good pattern: read the feed at decision points, then act.
 
 - Before claiming: check what's ready

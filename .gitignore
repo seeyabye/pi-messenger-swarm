@@ -2,3 +2,5 @@ node_modules/
 *.DS_Store
 dist/
 coverage/
+# Local pi-messenger runtime state (registry, sessions, channels, tasks, agents)
+.pi/

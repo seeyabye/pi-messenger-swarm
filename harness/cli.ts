@@ -51,6 +51,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as http from 'node:http';
+import { resolveSessionId } from './session-id.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -121,6 +122,17 @@ function httpPost(
     req.write(data);
     req.end();
   });
+}
+
+/** Check whether a PID is alive (kept local to avoid importing extension
+ * code into the standalone CLI). */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -207,12 +219,17 @@ function readRegistrationName(): string | undefined {
       }
     }
 
-    // Fallback: most recently modified registration (most likely active)
+    // Fallback: most recently modified LIVE registration (most likely the
+    // active session). Skip registrations whose owning pi process is dead so
+    // we don't impersonate a stale session from a previous run.
     let bestName: string | undefined;
     let bestMtime = 0;
     for (const file of files) {
       try {
-        const stat = fs.statSync(path.join(registryDir, file));
+        const regPath = path.join(registryDir, file);
+        const reg = JSON.parse(fs.readFileSync(regPath, 'utf-8'));
+        if (reg.pid && !isPidAlive(reg.pid)) continue;
+        const stat = fs.statSync(regPath);
         if (stat.mtimeMs > bestMtime) {
           bestMtime = stat.mtimeMs;
           bestName = file.replace(/\.json$/, '');
@@ -228,18 +245,20 @@ function readRegistrationName(): string | undefined {
 }
 
 /**
- * Read the session ID from .pi/messenger/session-id, written by the
- * extension at session_start. This bridges the gap between pi's
- * SessionManager (only available in-process) and the harness server.
+ * Resolve the session ID the CLI should send as `x-session-id`. The
+ * extension writes it to disk at session_start (per-pid, plus a singleton
+ * fallback), bridging pi's in-process SessionManager and the harness server.
+ * Delegates to resolveSessionId() which prefers the per-pid entry so
+ * concurrent pi sessions in the same project don't clobber each other.
  */
 function readSessionIdFromFile(): string | undefined {
   try {
     const projectRoot = resolveProjectRoot(callerCwd());
-    const sessionFilePath = path.join(projectRoot, '.pi', 'messenger', 'session-id');
-    if (fs.existsSync(sessionFilePath)) {
-      const id = fs.readFileSync(sessionFilePath, 'utf-8').trim();
-      if (id) return id;
-    }
+    // Prefer the per-pid entry so concurrent pi sessions in the same project
+    // each resolve their own session id. Falls back to the singleton when no
+    // per-pid entry exists or the caller pid can't be resolved. See
+    // harness/session-id.ts for the full rationale.
+    return resolveSessionId({ projectRoot, callerPid: findCallerPid() });
   } catch {
     // Not available
   }

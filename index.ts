@@ -27,7 +27,7 @@ import {
 } from './lib.js';
 import { displayChannelLabel } from './channel.js';
 import * as store from './store.js';
-import { getContextSessionId, getEffectiveSessionId } from './store/shared.js';
+import { getContextSessionId, getEffectiveSessionId, normalizeCwd } from './store/shared.js';
 import { syncChannelStateFromDisk } from './store/agents.js';
 import { MessengerOverlay, type OverlayCallbacks } from './overlay/component.js';
 import { MessengerConfigOverlay } from './overlay/config-overlay.js';
@@ -41,6 +41,7 @@ import { createActivityTracker } from './extension/activity.js';
 import { installShellAlias, createHarnessServer } from './extension/harness.js';
 import { handleReservationEnforcement } from './extension/reservation.js';
 import { handleSessionShutdown } from './extension/shutdown.js';
+import { isProcessAlive } from './lib.js';
 
 let overlayTui: TUI | null = null;
 let overlayHandle: OverlayHandle | null = null;
@@ -77,11 +78,16 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
   const nameTheme = { theme: config.nameTheme, customWords: config.nameWords };
 
   function getMessengerDirs(): Dirs {
-    const baseDir =
+    // Normalize (realpath) the base so the extension's paths match the
+    // harness server's per-request dirs (which normalize via normalizeCwd).
+    // Without this, string comparisons under symlinks disagree even though
+    // the underlying files are the same.
+    const rawBase =
       process.env.PI_MESSENGER_DIR ||
       (process.env.PI_MESSENGER_GLOBAL === '1'
         ? join(getAgentDir(), 'messenger')
         : join(process.cwd(), '.pi/messenger'));
+    const baseDir = normalizeCwd(rawBase);
     return {
       base: baseDir,
       registry: join(baseDir, 'registry'),
@@ -169,7 +175,17 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
   // between poll intervals.
   const SPAWN_POLL_MS = 3_000;
   let spawnPollTimer: ReturnType<typeof setInterval> | null = null;
-  const notifiedSpawnCompletions = new Set<string>();
+  // Spawn-completion dedup: spawn ids only (bounded by this session's spawn
+  // count). We deliberately do NOT prune this set — the old FIFO prune
+  // evicted historical ids and the next full-history scan re-notified them.
+  // Memory is modest for any realistic session.
+  const notifiedSpawnIds = new Set<string>();
+  // Per-channel message cursor: the max message timestamp we've already
+  // push-notified. Replaces a dedup set that was FIFO-pruned (which caused
+  // re-notification of evicted keys). Feed events are append-only and
+  // time-ordered, so a high-water mark per channel dedupes without unbounded
+  // growth and without re-notifying history.
+  const notifiedMessageTsByChannel = new Map<string, number>();
 
   let primedSpawnCompletions = false;
 
@@ -180,18 +196,21 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
       // re-notify about historical completions on extension reload.
       // Must happen here (after registration) because getEffectiveSessionId
       // depends on state.currentChannel which is set during register().
+      const cwd = normalizeCwd(process.cwd());
       if (!primedSpawnCompletions) {
         primedSpawnCompletions = true;
         try {
-          const cwd = process.cwd();
           const sessionId = getEffectiveSessionId(cwd, state);
           const existing = listSpawnedHistory(cwd, sessionId);
           for (const agent of existing) {
             if (agent.status !== 'running' && agent.id) {
-              notifiedSpawnCompletions.add(agent.id);
+              notifiedSpawnIds.add(agent.id);
             }
           }
-          // Also prime existing messages addressed to this agent
+          // Prime the per-channel message cursor with the newest existing
+          // targeted message so we don't re-notify history on reload.
+          // Messages that arrived while this session was offline are
+          // intentionally suppressed here (read them via `feed`); see SKILL.md.
           if (state.agentName) {
             const channels =
               state.joinedChannels.length > 0
@@ -202,11 +221,14 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
             for (const channelId of channels) {
               try {
                 const events = readFeedEvents(cwd, 50, channelId);
+                let maxTs = notifiedMessageTsByChannel.get(channelId) ?? 0;
                 for (const event of events) {
                   if (event.type === 'message' && event.target === state.agentName) {
-                    notifiedSpawnCompletions.add(`msg:${event.ts}:${event.agent}:${channelId}`);
+                    const ts = Date.parse(event.ts);
+                    if (Number.isFinite(ts) && ts > maxTs) maxTs = ts;
                   }
                 }
+                if (maxTs > 0) notifiedMessageTsByChannel.set(channelId, maxTs);
               } catch {
                 // Best effort
               }
@@ -216,7 +238,6 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
           // Best effort
         }
       }
-      const cwd = process.cwd();
 
       // Also sync live workers for the overlay
       const result = await syncFromRemote(cwd);
@@ -234,10 +255,9 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
         // when the harness server's cwd resolution was incorrect.
         if (agent.projectCwd && agent.projectCwd !== cwd) continue;
 
-        // Deduplicate by spawn id
-        const notifKey = agent.id;
-        if (notifiedSpawnCompletions.has(notifKey)) continue;
-        notifiedSpawnCompletions.add(notifKey);
+        // Deduplicate by spawn id (no prune — see notifiedSpawnIds comment)
+        if (notifiedSpawnIds.has(agent.id)) continue;
+        notifiedSpawnIds.add(agent.id);
 
         const statusLabel =
           agent.status === 'completed'
@@ -266,14 +286,6 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
         );
       }
 
-      // Prune old completion keys to prevent unbounded growth
-      if (notifiedSpawnCompletions.size > 200) {
-        const entries = Array.from(notifiedSpawnCompletions);
-        for (let i = 0; i < entries.length - 100; i++) {
-          notifiedSpawnCompletions.delete(entries[i]);
-        }
-      }
-
       // Check for unread messages addressed to this agent
       // and push-notify so the agent can respond immediately.
       if (state.agentName) {
@@ -299,10 +311,21 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
           for (const event of events) {
             if (event.type !== 'message') continue;
             if (event.target !== state.agentName) continue;
-            // Deduplicate by timestamp + sender
-            const msgKey = `msg:${event.ts}:${event.agent}:${channelId}`;
-            if (notifiedSpawnCompletions.has(msgKey)) continue;
-            notifiedSpawnCompletions.add(msgKey);
+            // Deduplicate via per-channel timestamp cursor (see
+            // notifiedMessageTsByChannel comment): notify only messages newer
+            // than the last one we pushed.
+            //
+            // Tradeoff vs the old per-message set key: two targeted messages
+            // that share the same millisecond timestamp, or a later-appended
+            // message whose ts is earlier than the cursor (cross-process clock
+            // skew / NTP rollback), are skipped and remain readable only via
+            // `feed`. This is acceptable: same-ms collisions are rare, the
+            // feed is the durable source of truth, and the cursor keeps memory
+            // bounded without the old FIFO prune that re-notified evicted keys.
+            const ts = Date.parse(event.ts);
+            if (!Number.isFinite(ts)) continue;
+            if (ts <= (notifiedMessageTsByChannel.get(channelId) ?? 0)) continue;
+            notifiedMessageTsByChannel.set(channelId, ts);
 
             pi.sendMessage(
               {
@@ -494,11 +517,39 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
     // The next parent CLI call would then read the child's session ID
     // and trigger a spurious session-mismatch reset, creating orphan
     // session channels.
+    //
+    // Per-pid entry (sessions/<pid>): the singleton `session-id` file is
+    // overwritten by whichever pi session started last, so two concurrent
+    // sessions in the same project would both resolve the last writer's id.
+    // The per-pid entry lets each session's CLI pick its own id by caller
+    // pid (see harness/session-id.ts). The singleton is kept as a fallback.
     const sessionId = getContextSessionId(ctx);
     if (sessionId && !process.env.PI_SWARM_SPAWNED) {
       try {
-        const sessionFilePath = join(dirs.base, 'session-id');
-        fs.writeFileSync(sessionFilePath, sessionId, 'utf-8');
+        fs.writeFileSync(join(dirs.base, 'session-id'), sessionId, 'utf-8');
+        const sessionsDir = join(dirs.base, 'sessions');
+        fs.mkdirSync(sessionsDir, { recursive: true });
+        fs.writeFileSync(join(sessionsDir, String(process.pid)), sessionId, 'utf-8');
+        // Sweep stale per-pid entries left by pi sessions that exited without
+        // a clean shutdown (crash, kill -9). PID recycling makes a stale file
+        // briefly resolve to the wrong id until the recycled pid's session
+        // overwrites it; removing dead-pid files keeps the window negligible.
+        try {
+          for (const entry of fs.readdirSync(sessionsDir)) {
+            const pidStr = entry;
+            const pid = parseInt(pidStr, 10);
+            if (!Number.isInteger(pid) || pid === process.pid) continue;
+            if (!isProcessAlive(pid)) {
+              try {
+                fs.unlinkSync(join(sessionsDir, entry));
+              } catch {
+                // Best effort
+              }
+            }
+          }
+        } catch {
+          // Best effort
+        }
       } catch {
         // Best effort
       }
@@ -596,6 +647,16 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
     // handleSessionShutdown runs below. If the harness truly needs to stop,
     // the user can run `pi-messenger-swarm --stop` explicitly.
     harnessServer.stop(); // Only stops the process WE spawned (if any)
+    // Remove our per-pid session-id entry so a recycled PID doesn't briefly
+    // resolve to our (now-ended) session id. The startup sweep also removes
+    // stale entries, but cleaning up here avoids leaving a dead-pid file.
+    if (!process.env.PI_SWARM_SPAWNED) {
+      try {
+        fs.unlinkSync(join(dirs.base, 'sessions', String(process.pid)));
+      } catch {
+        // Best effort — file may not exist
+      }
+    }
     overlayOpening = false;
     overlayHandle = null;
     overlayTui = null;

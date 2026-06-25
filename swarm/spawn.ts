@@ -890,9 +890,63 @@ export function restoreRuntimes(messengerDir: string): number {
     return 0;
   }
 
-  const count = restoreRuntimeEntries(entries);
+  // Split alive vs dead. Alive entries are reattached as detached runtimes.
+  // Dead entries (the process exited between the persist and this restore)
+  // get a terminal tombstone so their event log doesn't stay 'running'
+  // forever. This covers ALL projects: persistRuntimes writes every in-memory
+  // runtime (across projects) to one file, and the periodic persist timer in
+  // the server keeps it fresh, so a crash leaves a multi-project snapshot.
+  const alive: typeof entries = [];
+  for (const entry of entries) {
+    if (runtimes.has(entry.id)) continue;
+    if (isProcessAlive(entry.pid)) {
+      alive.push(entry);
+    } else {
+      finalizeDeadPersistedRuntime(entry.record);
+    }
+  }
+
+  const count = restoreRuntimeEntries(alive);
   if (count > 0) startDetachedPolling();
   return count;
+}
+
+/**
+ * Write a 'failed' tombstone for a persisted runtime whose process is no
+ * longer alive, unless the old server already wrote a terminal event (e.g.
+ * 'completed') before exiting. Keeps the event log consistent across all
+ * projects after a harness crash/restart.
+ */
+function finalizeDeadPersistedRuntime(record: SpawnedAgent): void {
+  const sessionId = record.sessionId || '';
+  if (!sessionId) return;
+  try {
+    const jsonlPath = getAgentEventsJsonlPath(record.cwd, sessionId);
+    const existing = loadSpawnedAgentsFromFile(jsonlPath);
+    const existingRec = existing.find((a) => a.id === record.id);
+    if (existingRec && existingRec.status && existingRec.status !== 'running') {
+      // Already finalized by the old server — don't override a legitimate
+      // 'completed'/'stopped' with a synthetic 'failed'.
+      return;
+    }
+    const endedAt = new Date().toISOString();
+    const error = 'Process exited (detected during runtime restore after server restart)';
+    appendEvent(record.cwd, sessionId, {
+      id: record.id,
+      type: 'failed',
+      timestamp: endedAt,
+      agent: { status: 'failed', endedAt, exitCode: 1, error },
+    });
+    generateAgentFile(record.cwd, sessionId, {
+      ...record,
+      status: 'failed',
+      endedAt,
+      exitCode: 1,
+      error,
+    });
+  } catch {
+    // Best effort
+  }
 }
 
 /**
