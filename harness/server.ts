@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { MessengerState, Dirs, AgentMailMessage, NameThemeConfig } from '../lib.js';
-import { loadConfig, type MessengerConfig } from '../config.js';
+import { loadConfigCached, clearConfigCache, type MessengerConfig } from '../config.js';
 import { executeAction, type RouterConfig } from '../router.js';
 import {
   normalizeChannelId,
@@ -102,15 +102,12 @@ function dirsForCwd(cwd: string, overrideBase?: string): Dirs {
   return dirs;
 }
 
-// Per-request config cache: cwd → config (avoids re-reading pi-messenger.json on every request).
-const configCache = new Map<string, MessengerConfig>();
-
+// Per-request config cache: cwd → config. Delegates to loadConfigCached(),
+// which re-reads `.pi/pi-messenger.json` when its mtime changes — so editing the
+// project config (e.g. raising maxConcurrentSpawns) takes effect without a
+// server restart. A full cache clear is still performed by /restart.
 function configForCwd(cwd: string): MessengerConfig {
-  const cached = configCache.get(cwd);
-  if (cached) return cached;
-  const config = loadConfig(cwd);
-  configCache.set(cwd, config);
-  return config;
+  return loadConfigCached(cwd);
 }
 
 function routerConfigForCwd(cwd: string): RouterConfig {
@@ -691,7 +688,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   // and registrations. Use /quit for a full shutdown that kills everything.
   if (req.method === 'POST' && url.pathname === '/restart') {
     dirsCache.clear();
-    configCache.clear();
+    clearConfigCache();
     serverLog('soft restart: cleared config and dirs caches');
     res.writeHead(200, TEXT_JSON);
     res.end(

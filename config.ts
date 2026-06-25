@@ -8,7 +8,7 @@
  * 4. Defaults
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 
@@ -218,4 +218,61 @@ export function loadConfig(cwd: string): MessengerConfig {
     senderDetailsOnFirstContact: merged.senderDetailsOnFirstContact !== false,
     ...sharedFields,
   };
+}
+
+/**
+ * Mtime-aware cached config loader.
+ *
+ * `loadConfig` reads the project's `.pi/pi-messenger.json` (the highest-priority
+ * source and the only one users edit at runtime) on every call, which is too
+ * costly to do per HTTP request. `configForCwd` (in harness/server.ts) caches
+ * the result per cwd, but previously cached it **indefinitely** — so editing
+ * `.pi/pi-messenger.json` (e.g. raising `maxConcurrentSpawns`) had no effect
+ * until a full `--restart` cleared the cache. That forced a confusing
+ * stop/start of the shared harness, which kills any running spawned agents.
+ *
+ * `loadConfigCached` keeps the per-cwd cache but re-reads when the project
+ * config file's mtime changes. The lower-priority global sources
+ * (`~/.pi/agent/pi-messenger.json`, `settings.json`) are read fresh on every
+ * cache miss; they change rarely enough that not invalidating on their mtime
+ * is an acceptable tradeoff (a `--restart` still forces a full reload).
+ */
+interface CachedConfig {
+  config: MessengerConfig;
+  /** mtime (ms) of the project config file at cache time, or -1 if absent. */
+  projectMtimeMs: number;
+}
+
+const configCacheByCwd = new Map<string, CachedConfig>();
+
+function projectConfigMtimeMs(cwd: string): number {
+  try {
+    return statSync(join(cwd, '.pi', 'pi-messenger.json')).mtimeMs;
+  } catch {
+    return -1;
+  }
+}
+
+/**
+ * Returns the cached config for `cwd`, re-reading from disk when the project
+ * config file has been modified (or created/deleted) since the last read.
+ *
+ * Exported for use by the harness server; also unit-tested directly. Pass
+ * `forceRefresh` to bypass the cache (equivalent to what `/restart` does by
+ * calling `clearConfigCache`).
+ */
+export function loadConfigCached(cwd: string, forceRefresh = false): MessengerConfig {
+  const currentMtime = projectConfigMtimeMs(cwd);
+  const cached = configCacheByCwd.get(cwd);
+  if (!forceRefresh && cached && cached.projectMtimeMs === currentMtime) {
+    return cached.config;
+  }
+  const config = loadConfig(cwd);
+  configCacheByCwd.set(cwd, { config, projectMtimeMs: currentMtime });
+  return config;
+}
+
+/** Clear the config cache (used by the `/restart` endpoint). */
+export function clearConfigCache(): void {
+  configCacheByCwd.clear();
 }
