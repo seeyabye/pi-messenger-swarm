@@ -11,4 +11,6 @@ export {
   executeFeed,
   executeRename,
   executeChannels,
+  executeChannelPrune,
+  executeChannelDelete,
 } from './coordination/index.js';

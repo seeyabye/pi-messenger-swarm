@@ -525,6 +525,8 @@ Usage:
   pi-messenger-swarm --start     Start the harness server
   pi-messenger-swarm --stop      Stop the harness server
   pi-messenger-swarm channels [--all]
+  pi-messenger-swarm channel prune [--dry-run]
+  pi-messenger-swarm channel delete --channel <id> [--force]
 
   pi-messenger-swarm --status    Check if harness server is running
   pi-messenger-swarm --start     Start the harness server
@@ -725,6 +727,33 @@ Environment:
     case 'channels': {
       const showAll = extractFlagBool(args, 'all');
       await postAction(buildAction({ action: 'channels', showAll: showAll || undefined }));
+      break;
+    }
+
+    case 'channel': {
+      const sub = args.shift();
+      switch (sub) {
+        case 'prune': {
+          const dryRun = extractFlagBool(args, 'dry-run');
+          await postAction(buildAction({ action: 'channel.prune', dryRun: dryRun || undefined }));
+          break;
+        }
+        case 'delete': {
+          const channel = extractFlag(args, 'channel');
+          const force = extractFlagBool(args, 'force');
+          if (!channel) {
+            process.stderr.write('Error: channel delete requires --channel <id>.\n');
+            process.exit(1);
+          }
+          await postAction(
+            buildAction({ action: 'channel.delete', channel, force: force || undefined })
+          );
+          break;
+        }
+        default:
+          process.stderr.write('Error: unknown channel subcommand. Use `prune` or `delete`.\n');
+          process.exit(1);
+      }
       break;
     }
 

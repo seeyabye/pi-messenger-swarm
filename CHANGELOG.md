@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.25.21-custom] - 2026-06-26
+
+Custom fork of upstream `0.25.21` (monotykamary/pi-messenger-swarm), published under the `@seeyabye` scope as `@seeyabye/pi-messenger-swarm`.
+
+### Added
+
+* Channel hygiene: `channel prune` (auto GC on join + `--dry-run`) and
+  `channel delete --channel <id> [--force]` commands to clean orphaned and
+  abandoned channels.
+* Spawned subagents inherit the parent's existing channel instead of minting
+  an orphaned header-only session channel (`inheritedChannel` threading).
+* `hasChannelEvents` helper for cheap presence checks.
+
+### Fixed
+
+* `channel delete` no longer deletes a channel the current agent is joined to
+  (self-joined guard).
+* GC never removes session channels with feed history, live agents, or a live
+  owning session (race-safe via `currentSessionId`).
+
 ### [0.25.20](https://github.com/monotykamary/pi-messenger-swarm/compare/v0.25.19...v0.25.20) (2026-06-04)
 
 

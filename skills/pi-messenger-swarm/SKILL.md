@@ -79,6 +79,8 @@ pi-messenger-swarm join [--channel dev] [--create]
 pi-messenger-swarm status
 pi-messenger-swarm list
 pi-messenger-swarm channels [--all]
+pi-messenger-swarm channel prune [--dry-run]
+pi-messenger-swarm channel delete --channel <id> [--force]
 pi-messenger-swarm feed [--limit 20] [--channel dev]
 pi-messenger-swarm send AgentName "hello"
 pi-messenger-swarm send #memory "remember this"
@@ -88,6 +90,18 @@ pi-messenger-swarm whois AgentName
 pi-messenger-swarm set-status "debugging auth"
 pi-messenger-swarm rename NewName
 ```
+
+### Channel hygiene
+
+- **Don't create a channel per task.** Tasks are session-scoped (one shared
+  board per session); channels carry the message feed. Scope work with tasks
+  - the shared session channel; use `#memory` for durable notes.
+- Spawned agents inherit the parent's channel — spawning a worker per task
+  does not need a new channel.
+- Orphaned session channels are pruned on join; run `channel prune`
+  (`--dry-run` to preview) to clean on demand.
+- Retire abandoned named channels with `channel delete --channel <id>
+[--force]`. `#memory` is protected and cannot be deleted.
 
 ### Swarm board
 

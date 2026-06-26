@@ -106,6 +106,21 @@ If Pi switches or resumes sessions inside the same live messenger instance, mess
 - restarts watchers on the correct inbox
 - keeps named channels like `#memory`
 
+### Channel hygiene
+
+- **Don't create a channel per task.** Tasks are session-scoped (one shared
+  board per session); channels carry the message feed. Scope work with
+  tasks + the shared session channel, and use `#memory` for durable notes.
+  Spawning a worker per task does not require a new channel — spawned
+  agents inherit the parent's channel.
+- Session channels are auto-created per Pi session and auto-reused by
+  `sessionId`. Orphaned ones (header-only, dead session) are pruned
+  automatically on join; run `pi-messenger-swarm channel prune` to clean
+  them on demand (`--dry-run` to preview).
+- Retire abandoned named channels with
+  `pi-messenger-swarm channel delete --channel <id> [--force]`. `#memory`
+  is protected and cannot be deleted.
+
 ## Core Actions
 
 ### Coordination

@@ -145,10 +145,6 @@ export function readChannelHeader(dirs: Dirs, channelId: string): ChannelMetaHea
   return null;
 }
 
-/**
- * Read all event lines from a channel JSONL file (skips the metadata header).
- * Returns raw JSON strings, not parsed objects.
- */
 /** Get the timestamp of the last feed event in a channel, or null if no events. */
 export function getLastActivity(dirs: Dirs, channelId: string): string | null {
   try {
@@ -161,6 +157,10 @@ export function getLastActivity(dirs: Dirs, channelId: string): string | null {
   }
 }
 
+/**
+ * Read all event lines from a channel JSONL file (skips the metadata header).
+ * Returns raw JSON strings, not parsed objects.
+ */
 export function readChannelEventLines(dirs: Dirs, channelId: string): string[] {
   const filePath = channelPath(dirs, channelId);
   if (!fs.existsSync(filePath)) return [];
@@ -172,6 +172,28 @@ export function readChannelEventLines(dirs: Dirs, channelId: string): string[] {
     return lines.slice(1).filter((line) => line.trim());
   } catch {
     return [];
+  }
+}
+
+/**
+ * Return true if a channel has any feed events (more than just the metadata
+ * header). Cheaper than readChannelEventLines when only presence is needed:
+ * it returns as soon as the first event line is found, without building the
+ * full array of events.
+ */
+export function hasChannelEvents(dirs: Dirs, channelId: string): boolean {
+  const filePath = channelPath(dirs, channelId);
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const lines = content.split('\n');
+    // First line is the metadata header; any subsequent non-empty line is an event.
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim()) return true;
+    }
+    return false;
+  } catch {
+    return false;
   }
 }
 
@@ -230,6 +252,23 @@ export function pruneChannelEvents(dirs: Dirs, channelId: string, maxEvents: num
     fs.writeFileSync(filePath, header + '\n' + pruned.join('\n') + '\n');
   } catch {
     // Best effort
+  }
+}
+
+/**
+ * Delete a channel's JSONL file (metadata header + feed events).
+ * Returns true if the file existed and was removed. Does not touch the
+ * in-process feed cache; callers should invalidate it separately
+ * (see invalidateFeedCache in feed/index.ts).
+ */
+export function deleteChannel(dirs: Dirs, channelId: string): boolean {
+  const filePath = channelPath(dirs, channelId);
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    fs.unlinkSync(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 

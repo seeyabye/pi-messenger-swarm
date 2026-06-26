@@ -38,6 +38,7 @@ export interface MessengerActionParams {
 
   // Channels
   showAll?: boolean;
+  dryRun?: boolean;
 
   // Spawn
   role?: string;

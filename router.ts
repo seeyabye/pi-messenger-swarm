@@ -220,6 +220,26 @@ export async function executeAction(
     case 'channels':
       return handlers.executeChannels(state, dirs, cwd, params.showAll ? true : undefined);
 
+    case 'channel': {
+      const operation = op ?? 'prune';
+      if (operation === 'prune') {
+        return handlers.executeChannelPrune(state, dirs, cwd, params.dryRun === true);
+      }
+      if (operation === 'delete') {
+        return handlers.executeChannelDelete(
+          { channel: params.channel, force: params.force === true },
+          state,
+          dirs,
+          cwd
+        );
+      }
+      return result(`Unknown channel operation: ${operation}`, {
+        mode: 'channel',
+        error: 'unknown_operation',
+        operation,
+      });
+    }
+
     case 'spawn':
       return executeSpawn(
         op,

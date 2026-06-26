@@ -5,6 +5,7 @@ import { displaySpecPath, extractFolder, resolveSpecPath } from '../../lib.js';
 import { displayChannelLabel } from '../../channel.js';
 import { ensureStateChannels } from '../../store/shared.js';
 import { getContextSessionId } from '../../store/shared.js';
+import { pruneOrphanedSessionChannels } from '../../store/channel-gc.js';
 import * as store from '../../store.js';
 import { logFeedEvent, pruneFeed } from '../../feed/index.js';
 import { result } from '../result.js';
@@ -31,7 +32,13 @@ export function executeJoin(
     // a new session channel.
     const preexistingChannel = state.currentChannel;
 
-    if (!store.register(state, dirs, ctx, nameTheme)) {
+    // Thread the pre-set (header-inherited) channel into register() so
+    // ensureStateChannels adopts it as home instead of minting an orphan
+    // session channel that the spawned worker would never post to.
+    // Only when no explicit --channel was requested.
+    const inheritedChannel = preexistingChannel && !channel ? preexistingChannel : undefined;
+
+    if (!store.register(state, dirs, ctx, nameTheme, inheritedChannel)) {
       return result('Failed to join the agent mesh. Check logs for details.', {
         mode: 'join',
         error: 'registration_failed',
@@ -63,6 +70,11 @@ export function executeJoin(
     updateStatusFn(ctx);
     pruneFeed(cwd, feedRetention ?? 50, state.currentChannel);
     logFeedEvent(cwd, state.agentName, 'join', undefined, undefined, state.currentChannel);
+    // Clean up orphaned session channels left by prior spawns (header-only,
+    // dead session, no live agents). Cheap and idempotent.
+    pruneOrphanedSessionChannels(state, dirs, cwd, {
+      currentSessionId: state.contextSessionId,
+    });
   } else if (channel) {
     const switched = store.joinChannel(state, dirs, channel, { create });
     if (!switched.success) {

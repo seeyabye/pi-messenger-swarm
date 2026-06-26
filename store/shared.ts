@@ -162,22 +162,40 @@ export function ensureStateChannels(
   state: MessengerState,
   dirs: Dirs,
   ctx: ExtensionContext,
-  options?: { preserveNamedChannel?: boolean }
+  options?: { preserveNamedChannel?: boolean; inheritedChannel?: string }
 ): void {
   ensureDefaultNamedChannels(dirs, state.agentName || undefined);
 
-  const inheritedChannel = process.env.PI_MESSENGER_CHANNEL?.trim();
+  const envInherited = process.env.PI_MESSENGER_CHANNEL?.trim();
   const sessionId = getContextSessionId(ctx);
+  // A channel the agent is inheriting from a parent (spawned subagents).
+  // When set and already on disk, adopt it as the agent's home channel
+  // instead of minting an orphaned session channel that would never be
+  // posted to. Threaded from executeJoin via the x-messenger-channel header.
+  const adoptedChannel = options?.inheritedChannel?.trim();
 
   let sessionChannel = state.sessionChannel?.trim();
   let resetToSessionChannel = false;
-  if (inheritedChannel) {
-    const record = ensureExistingOrCreateChannel(dirs, inheritedChannel, {
+  if (envInherited) {
+    const record = ensureExistingOrCreateChannel(dirs, envInherited, {
       create: true,
       createdBy: state.agentName || undefined,
     });
-    sessionChannel = record?.id ?? normalizeChannelId(inheritedChannel);
+    sessionChannel = record?.id ?? normalizeChannelId(envInherited);
     resetToSessionChannel = true;
+  } else if (adoptedChannel) {
+    // Spawned subagent inheriting a parent channel: adopt the existing
+    // channel as home (no orphan mint) only if it already exists on disk
+    // (the parent always creates it first). If it doesn't exist yet, fall
+    // through to minting so executeJoin's restore can create it.
+    const existing = getChannel(dirs, normalizeChannelId(adoptedChannel));
+    if (existing) {
+      sessionChannel = existing.id;
+      resetToSessionChannel = true;
+    } else {
+      sessionChannel = ensureSessionChannel(dirs, sessionId, state.agentName || undefined).id;
+      resetToSessionChannel = true;
+    }
   } else if (sessionId) {
     sessionChannel = ensureSessionChannel(dirs, sessionId, state.agentName || undefined).id;
     resetToSessionChannel = true;

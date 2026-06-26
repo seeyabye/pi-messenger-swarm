@@ -77,7 +77,7 @@ function unifiedChannelPath(cwd: string, channelId: string): string {
   return channelPath({ base, registry: '' }, channelId);
 }
 
-function invalidateFeedCache(cwd: string, channelId: string): void {
+export function invalidateFeedCache(cwd: string, channelId: string): void {
   const p = unifiedChannelPath(cwd, channelId);
   feedCache.delete(p);
 }

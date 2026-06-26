@@ -35,7 +35,8 @@ export function register(
   state: MessengerState,
   dirs: Dirs,
   ctx: ExtensionContext,
-  nameTheme?: NameThemeConfig
+  nameTheme?: NameThemeConfig,
+  inheritedChannel?: string
 ): boolean {
   if (state.registered) return true;
 
@@ -70,6 +71,7 @@ export function register(
 
   ensureStateChannels(state, dirs, ctx, {
     preserveNamedChannel: persistedSessionId === currentCtxSessionId,
+    inheritedChannel,
   });
   state.contextSessionId = getContextSessionId(ctx);
 
