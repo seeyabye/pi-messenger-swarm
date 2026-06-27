@@ -157,4 +157,91 @@ describe('cleanupStaleTaskClaims — spawn-handshake race', () => {
     expect(after?.status).toBe('todo');
     expect(after?.claimed_by).toBeUndefined();
   });
+
+  it('still unclaims a spawned agent whose spawn-record process is dead (no claim leak)', () => {
+    const cwd = createTempCwd();
+    const sessionId = 'dead-spawn-session';
+    const agentName = 'DeadWorker';
+
+    const registryDir = path.join(cwd, '.pi', 'messenger', 'registry');
+    fs.mkdirSync(registryDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(registryDir, 'Coordinator.json'),
+      JSON.stringify({ name: 'Coordinator', pid: process.pid, sessionId, cwd }, null, 2)
+    );
+
+    // Spawn a worker with a DEAD pid (99999) — spawn record marks it running,
+    // but its process is not alive. The vouch must fail so the claim is released.
+    const proc = new FakeProcess();
+    (proc as any).pid = 99999; // non-existent process
+    spawnMock.mockReturnValue(proc as any);
+    spawnSubagent(
+      cwd,
+      { role: 'Worker', objective: 'do work', name: agentName, taskId: 'task-1' },
+      sessionId
+    );
+
+    const task = taskStore.createTask(
+      cwd,
+      sessionId,
+      { title: 'leak guard', createdBy: 'Coordinator' },
+      'iron-tiger'
+    );
+    taskStore.claimTask(cwd, sessionId, task.id, agentName);
+
+    taskStore._resetCleanupThrottle(cwd, sessionId);
+    taskStore.getTasks(cwd, sessionId);
+
+    // Spawn record exists & running, but its pid is dead → not vouched → unclaimed.
+    const after = taskStore.getTask(cwd, sessionId, task.id);
+    expect(after?.status).toBe('todo');
+    expect(after?.claimed_by).toBeUndefined();
+  });
+
+  it('preserves a claim when the spawn-record pid is alive but the registry pid is dead (stale registry)', () => {
+    const cwd = createTempCwd();
+    const sessionId = 'stale-registry-session';
+    const agentName = 'StaleRegWorker';
+
+    const registryDir = path.join(cwd, '.pi', 'messenger', 'registry');
+    fs.mkdirSync(registryDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(registryDir, 'Coordinator.json'),
+      JSON.stringify({ name: 'Coordinator', pid: process.pid, sessionId, cwd }, null, 2)
+    );
+
+    // Spawn record pid = process.pid (alive) → vouched.
+    const proc = new FakeProcess();
+    spawnMock.mockReturnValue(proc as any);
+    spawnSubagent(
+      cwd,
+      { role: 'Worker', objective: 'do work', name: agentName, taskId: 'task-1' },
+      sessionId
+    );
+
+    const task = taskStore.createTask(
+      cwd,
+      sessionId,
+      { title: 'stale registry guard', createdBy: 'Coordinator' },
+      'iron-tiger'
+    );
+    taskStore.claimTask(cwd, sessionId, task.id, agentName);
+
+    // Write a registry for the worker with a DEAD pid — simulating the PID
+    // transition where the registry briefly records a stale (dead) pid while
+    // the spawn subsystem knows the real live pid.
+    fs.writeFileSync(
+      path.join(registryDir, `${agentName}.json`),
+      JSON.stringify({ name: agentName, pid: 99999, sessionId, cwd }, null, 2)
+    );
+
+    taskStore._resetCleanupThrottle(cwd, sessionId);
+    taskStore.getTasks(cwd, sessionId);
+
+    // Vouched by the spawn record (live pid) → claim preserved despite the
+    // stale dead-pid registry.
+    const after = taskStore.getTask(cwd, sessionId, task.id);
+    expect(after?.status).toBe('in_progress');
+    expect(after?.claimed_by).toBe(agentName);
+  });
 });

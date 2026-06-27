@@ -1,11 +1,7 @@
 import type { SwarmTask, SwarmSummary } from '../types.js';
-import { replayTasks, replayAllTasks, appendTaskEvent } from './events.js';
+import { replayTasks, replayAllTasks } from './events.js';
 import { readTaskSpec } from './persistence.js';
 import { cleanupStaleTaskClaims } from './cleanup.js';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { isProcessAlive } from '../../lib.js';
-import { logFeedEvent } from '../../feed/index.js';
 
 // Throttled cleanup tracking per cwd+sessionId
 const lastCleanupTime = new Map<string, number>();

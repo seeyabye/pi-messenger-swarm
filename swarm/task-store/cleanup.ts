@@ -1,19 +1,3 @@
-/**
- * Grace window after a claim during which we will NOT auto-unclaim, even if
- * the claiming agent's registry file is briefly missing. Spawned agents
- * register (write their registry file) as part of their boot handshake, but
- * there is a window between the coordinator's `spawn`/the worker's `task
- * claim` and the worker's registry write landing on disk. Treating that
- * window as a departure causes the spurious "agent left - task auto-unclaimed"
- * race that loses the claim while the agent is still (and remains) active.
- *
- * Note: in practice the spawn record (written synchronously by spawnSubagent
- * before the worker claims) is the reliable signal — see isSpawnedAgentVouchedFor.
- * The grace constant is retained for the race where even the spawn record
- * has not yet been observed.
- */
-const CLAIM_HANDSHAKE_GRACE_MS = 30_000; // 30 seconds
-
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isProcessAlive } from '../../lib.js';
