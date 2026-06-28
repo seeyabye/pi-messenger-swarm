@@ -31,6 +31,55 @@ export function getRegistrationPath(state: MessengerState, dirs: Dirs): string {
   return join(dirs.registry, `${state.agentName}.json`);
 }
 
+/**
+ * Find an existing registration on disk for the SAME process (pid) — and,
+ * when available, the same session — so a second register() call for one
+ * agent reuses the existing name/file instead of creating a divergent
+ * duplicate.
+ *
+ * This reconciles the harness 'join' stub (model:'harness', created via the
+ * harness server with callerPid = <pi pid>) with the in-process real-agent
+ * registration (effectivePid = process.pid = <pi pid>, real model, isHuman).
+ * Without it, each path runs generateMemorableName() independently and leaves
+ * two registry files with divergent random names for a single (pid, sessionId)
+ * — `join` returns the stub name while `status`/`list` resolve to the other.
+ *
+ * Matching prefers a registration whose sessionId equals the current ctx
+ * session, falling back to the first pid match to cover the empty-sessionId
+ * edge (e.g. the session-id file not yet written when the stub was created).
+ * Only consulted when the caller has no explicit name (PI_AGENT_NAME unset /
+ * human-terminal fallback); the spawned-agent path sets the name explicitly and
+ * is unaffected.
+ */
+function findExistingRegistrationForProcess(
+  dirs: Dirs,
+  pid: number,
+  sessionId: string
+): AgentRegistration | null {
+  let files: string[];
+  try {
+    files = fs.readdirSync(dirs.registry);
+  } catch {
+    return null;
+  }
+
+  let pidMatch: AgentRegistration | null = null;
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const reg = JSON.parse(
+        fs.readFileSync(join(dirs.registry, file), 'utf-8')
+      ) as AgentRegistration;
+      if (reg.pid !== pid) continue;
+      if (sessionId && reg.sessionId === sessionId) return reg;
+      if (!pidMatch) pidMatch = reg;
+    } catch {
+      // malformed, skip
+    }
+  }
+  return pidMatch;
+}
+
 export function register(
   state: MessengerState,
   dirs: Dirs,
@@ -42,6 +91,24 @@ export function register(
 
   ensureDirSync(dirs.registry);
 
+  const currentCtxSessionId = getContextSessionId(ctx);
+  const effectivePid = state.callerPid ?? process.pid;
+
+  // Reconcile with any existing registration for the same process/session
+  // BEFORE generating a new random name. With PI_AGENT_NAME unset (the
+  // human-terminal fallback), the harness 'join' stub and the in-process real
+  // agent both register the same (pid, sessionId); without this, each gets a
+  // divergent random name and two files are created. Reusing the existing
+  // name makes the real registration UPDATE the stub (one stable name that
+  // join and status agree on). Spawned agents set the name explicitly and
+  // skip this block.
+  if (!state.agentName) {
+    const existing = findExistingRegistrationForProcess(dirs, effectivePid, currentCtxSessionId);
+    if (existing?.name) {
+      state.agentName = existing.name;
+    }
+  }
+
   if (!state.agentName) {
     state.agentName = generateMemorableName(nameTheme);
   }
@@ -49,7 +116,6 @@ export function register(
   // If a previous process (e.g., harness CLI) registered this agent and
   // joined a named channel, restore that state so the overlay opens on
   // the right channel instead of resetting to the session channel.
-  const currentCtxSessionId = getContextSessionId(ctx);
   let persistedSessionId: string | undefined;
   const regPath = join(dirs.registry, `${state.agentName}.json`);
   if (fs.existsSync(regPath)) {
@@ -73,9 +139,7 @@ export function register(
     preserveNamedChannel: persistedSessionId === currentCtxSessionId,
     inheritedChannel,
   });
-  state.contextSessionId = getContextSessionId(ctx);
-
-  const effectivePid = state.callerPid ?? process.pid;
+  state.contextSessionId = currentCtxSessionId;
 
   const isExplicitName = !!state.agentName;
   const maxAttempts = isExplicitName ? 1 : 3;
