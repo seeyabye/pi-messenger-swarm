@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.25.21-seeyabye.1](https://github.com/seeyabye/pi-messenger-swarm/compare/v0.25.21-custom...v0.25.21-seeyabye.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* **registration:** one registration per (pid,sessionId); join+status agree ([123bb15](https://github.com/seeyabye/pi-messenger-swarm/commit/123bb1531c751eae7526d422b60b790c285bb533))
+* **swarm:** don't auto-unclaim tasks during spawn handshake race ([d3d1481](https://github.com/seeyabye/pi-messenger-swarm/commit/d3d1481b470e38509b325627b13c01c10a3eae0e))
+
 ### [0.25.21-custom] - 2026-06-26
 
 Custom fork of upstream `0.25.21` (monotykamary/pi-messenger-swarm), published under the `@seeyabye` scope as `@seeyabye/pi-messenger-swarm`.
