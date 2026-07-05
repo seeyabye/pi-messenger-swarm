@@ -27,7 +27,12 @@ import {
 } from './lib.js';
 import { displayChannelLabel } from './channel.js';
 import * as store from './store.js';
-import { getContextSessionId, getEffectiveSessionId, normalizeCwd } from './store/shared.js';
+import {
+  getContextSessionId,
+  getEffectiveSessionId,
+  isSameProject,
+  normalizeCwd,
+} from './store/shared.js';
 import { syncChannelStateFromDisk } from './store/agents.js';
 import { MessengerOverlay, type OverlayCallbacks } from './overlay/component.js';
 import { MessengerConfigOverlay } from './overlay/config-overlay.js';
@@ -252,8 +257,11 @@ export default function piMessengerExtension(pi: ExtensionAPI) {
         if (agent.status === 'running') continue;
         // Only notify about agents that belong to THIS project.
         // Agents from other projects may exist in the same agents directory
-        // when the harness server's cwd resolution was incorrect.
-        if (agent.projectCwd && agent.projectCwd !== cwd) continue;
+        // when the harness server's cwd resolution was incorrect. Use
+        // isSameProject (resolves to nearest .git/.pi root) so an agent
+        // running from a project subdirectory still matches a spawn whose
+        // projectCwd is the project root — strict equality dropped these.
+        if (agent.projectCwd && !isSameProject(agent.projectCwd, cwd)) continue;
 
         // Deduplicate by spawn id (no prune — see notifiedSpawnIds comment)
         if (notifiedSpawnIds.has(agent.id)) continue;

@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import { execSync } from 'node:child_process';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { AgentRegistration, Dirs, MessengerState } from '../lib.js';
@@ -26,6 +26,41 @@ export function normalizeCwd(cwd: string): string {
   } catch {
     return resolve(cwd);
   }
+}
+
+/**
+ * Walk up from `start` to find the nearest ancestor containing `.git/` or
+ * `.pi/`. Falls back to `start` itself. Mirrors the harness CLI's
+ * `resolveProjectRoot` so the extension and harness agree on what counts as
+ * "the same project" even when invoked from a subdirectory.
+ */
+export function resolveProjectRoot(start: string): string {
+  let dir = start;
+  for (let i = 0; i < 20; i++) {
+    if (fs.existsSync(join(dir, '.git')) || fs.existsSync(join(dir, '.pi'))) {
+      return dir;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return start;
+}
+
+/**
+ * Returns true when two cwds belong to the same project. Compares the
+ * resolved project roots (nearest `.git`/`.pi` ancestor), so an agent
+ * running from a subdirectory still matches a spawn record whose projectCwd
+ * is the project root. Falls back to normalized cwd equality when neither
+ * path has a `.git`/`.pi` ancestor (e.g. ad-hoc temp dirs in tests).
+ */
+export function isSameProject(a: string, b: string): boolean {
+  const na = normalizeCwd(a);
+  const nb = normalizeCwd(b);
+  if (na === nb) return true;
+  const ra = resolveProjectRoot(na);
+  const rb = resolveProjectRoot(nb);
+  return ra === rb;
 }
 
 export function getGitBranch(cwd: string): string | undefined {

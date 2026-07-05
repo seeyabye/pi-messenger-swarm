@@ -52,6 +52,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as http from 'node:http';
 import { resolveSessionId } from './session-id.js';
+import { resolveProjectRoot } from '../store/shared.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -330,19 +331,6 @@ async function isUp(): Promise<boolean> {
  */
 function callerCwd(): string {
   return process.env.PI_MESSENGER_CALLER_CWD || process.cwd();
-}
-
-function resolveProjectRoot(start: string): string {
-  let dir = start;
-  for (let i = 0; i < 20; i++) {
-    if (fs.existsSync(path.join(dir, '.git')) || fs.existsSync(path.join(dir, '.pi'))) {
-      return dir;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return start;
 }
 
 async function startServer(): Promise<boolean> {
