@@ -1,0 +1,465 @@
+import * as fs from 'node:fs';
+import { join } from 'node:path';
+import { generateMemorableName, isProcessAlive, isValidAgentName } from '../lib.js';
+import { ensureExistingOrCreateChannel, getChannel, isValidChannelId, normalizeChannelId, } from '../channel.js';
+import { findAvailableName, invalidateAgentsCache } from './agents.js';
+import { applyRegistrationDefaults, ensureDirSync, ensureStateChannels, getContextSessionId, getGitBranch, normalizeCwd, normalizeJoinedChannels, updateChannelsInRegistration, } from './shared.js';
+export function getRegistrationPath(state, dirs) {
+    return join(dirs.registry, `${state.agentName}.json`);
+}
+/**
+ * Find an existing registration on disk for the SAME process (pid) — and,
+ * when available, the same session — so a second register() call for one
+ * agent reuses the existing name/file instead of creating a divergent
+ * duplicate.
+ *
+ * This reconciles the harness 'join' stub (model:'harness', created via the
+ * harness server with callerPid = <pi pid>) with the in-process real-agent
+ * registration (effectivePid = process.pid = <pi pid>, real model, isHuman).
+ * Without it, each path runs generateMemorableName() independently and leaves
+ * two registry files with divergent random names for a single (pid, sessionId)
+ * — `join` returns the stub name while `status`/`list` resolve to the other.
+ *
+ * Matching prefers a registration whose sessionId equals the current ctx
+ * session, falling back to the first pid match to cover the empty-sessionId
+ * edge (e.g. the session-id file not yet written when the stub was created).
+ * Only consulted when the caller has no explicit name (PI_AGENT_NAME unset /
+ * human-terminal fallback); the spawned-agent path sets the name explicitly and
+ * is unaffected.
+ */
+function findExistingRegistrationForProcess(dirs, pid, sessionId) {
+    let files;
+    try {
+        files = fs.readdirSync(dirs.registry);
+    }
+    catch {
+        return null;
+    }
+    let pidMatch = null;
+    for (const file of files) {
+        if (!file.endsWith('.json'))
+            continue;
+        try {
+            const reg = JSON.parse(fs.readFileSync(join(dirs.registry, file), 'utf-8'));
+            if (reg.pid !== pid)
+                continue;
+            if (sessionId && reg.sessionId === sessionId)
+                return reg;
+            if (!pidMatch)
+                pidMatch = reg;
+        }
+        catch {
+            // malformed, skip
+        }
+    }
+    return pidMatch;
+}
+export function register(state, dirs, ctx, nameTheme, inheritedChannel) {
+    if (state.registered)
+        return true;
+    ensureDirSync(dirs.registry);
+    const currentCtxSessionId = getContextSessionId(ctx);
+    const effectivePid = state.callerPid ?? process.pid;
+    // Reconcile with any existing registration for the same process/session
+    // BEFORE generating a new random name. With PI_AGENT_NAME unset (the
+    // human-terminal fallback), the harness 'join' stub and the in-process real
+    // agent both register the same (pid, sessionId); without this, each gets a
+    // divergent random name and two files are created. Reusing the existing
+    // name makes the real registration UPDATE the stub (one stable name that
+    // join and status agree on). Spawned agents set the name explicitly and
+    // skip this block.
+    if (!state.agentName) {
+        const existing = findExistingRegistrationForProcess(dirs, effectivePid, currentCtxSessionId);
+        if (existing?.name) {
+            state.agentName = existing.name;
+        }
+    }
+    if (!state.agentName) {
+        state.agentName = generateMemorableName(nameTheme);
+    }
+    // If a previous process (e.g., harness CLI) registered this agent and
+    // joined a named channel, restore that state so the overlay opens on
+    // the right channel instead of resetting to the session channel.
+    let persistedSessionId;
+    const regPath = join(dirs.registry, `${state.agentName}.json`);
+    if (fs.existsSync(regPath)) {
+        try {
+            const existing = JSON.parse(fs.readFileSync(regPath, 'utf-8'));
+            persistedSessionId = existing.sessionId;
+            if (existing.sessionId === currentCtxSessionId) {
+                if (existing.currentChannel) {
+                    state.currentChannel = normalizeChannelId(existing.currentChannel);
+                }
+                if (existing.joinedChannels) {
+                    state.joinedChannels = normalizeJoinedChannels(existing.joinedChannels);
+                }
+            }
+        }
+        catch {
+            // malformed, ignore
+        }
+    }
+    ensureStateChannels(state, dirs, ctx, {
+        preserveNamedChannel: persistedSessionId === currentCtxSessionId,
+        inheritedChannel,
+    });
+    state.contextSessionId = currentCtxSessionId;
+    const isExplicitName = !!state.agentName;
+    const maxAttempts = isExplicitName ? 1 : 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (isExplicitName) {
+            if (!isValidAgentName(state.agentName)) {
+                if (ctx.hasUI) {
+                    ctx.ui.notify(`Invalid agent name "${state.agentName}" - use only letters, numbers, underscore, hyphen`, 'error');
+                }
+                return false;
+            }
+            const regPath = join(dirs.registry, `${state.agentName}.json`);
+            if (fs.existsSync(regPath)) {
+                try {
+                    const existing = JSON.parse(fs.readFileSync(regPath, 'utf-8'));
+                    if (isProcessAlive(existing.pid) && existing.pid !== effectivePid) {
+                        if (ctx.hasUI) {
+                            ctx.ui.notify(`Agent name "${state.agentName}" already in use (PID ${existing.pid})`, 'error');
+                        }
+                        return false;
+                    }
+                }
+                catch {
+                    // Malformed, proceed to overwrite
+                }
+            }
+        }
+        else {
+            const availableName = findAvailableName(state.agentName, dirs);
+            if (!availableName) {
+                if (ctx.hasUI) {
+                    ctx.ui.notify('Could not find available agent name after 99 attempts', 'error');
+                }
+                return false;
+            }
+            state.agentName = availableName;
+        }
+        const regPath = getRegistrationPath(state, dirs);
+        if (fs.existsSync(regPath)) {
+            try {
+                fs.unlinkSync(regPath);
+            }
+            catch {
+                // Ignore
+            }
+        }
+        const cwd = normalizeCwd(ctx.cwd ?? process.cwd());
+        const gitBranch = getGitBranch(cwd);
+        const now = new Date().toISOString();
+        const registration = {
+            name: state.agentName,
+            pid: effectivePid,
+            sessionId: getContextSessionId(ctx),
+            cwd,
+            model: ctx.model?.id ??
+                (typeof ctx.model === 'string' ? ctx.model : 'unknown'),
+            startedAt: now,
+            gitBranch,
+            spec: state.spec,
+            isHuman: state.isHuman,
+            session: { ...state.session },
+            activity: { lastActivityAt: now },
+            currentChannel: state.currentChannel,
+            sessionChannel: state.sessionChannel,
+            joinedChannels: [...state.joinedChannels],
+        };
+        try {
+            fs.writeFileSync(regPath, JSON.stringify(registration, null, 2));
+        }
+        catch (err) {
+            if (ctx.hasUI) {
+                const msg = err instanceof Error ? err.message : 'unknown error';
+                ctx.ui.notify(`Failed to register: ${msg}`, 'error');
+            }
+            return false;
+        }
+        let verified = false;
+        let verifyError = false;
+        try {
+            const written = JSON.parse(fs.readFileSync(regPath, 'utf-8'));
+            verified = written.pid === effectivePid;
+        }
+        catch {
+            verifyError = true;
+        }
+        if (verified) {
+            state.registered = true;
+            state.model =
+                ctx.model?.id ??
+                    (typeof ctx.model === 'string' ? ctx.model : 'unknown');
+            state.gitBranch = gitBranch;
+            state.activity.lastActivityAt = now;
+            invalidateAgentsCache();
+            return true;
+        }
+        if (verifyError) {
+            try {
+                const checkContent = fs.readFileSync(regPath, 'utf-8');
+                const checkReg = JSON.parse(checkContent);
+                if (checkReg.pid === effectivePid) {
+                    fs.unlinkSync(regPath);
+                }
+            }
+            catch {
+                // Best effort cleanup
+            }
+        }
+        if (isExplicitName) {
+            if (ctx.hasUI) {
+                ctx.ui.notify(`Agent name "${state.agentName}" was claimed by another agent`, 'error');
+            }
+            return false;
+        }
+        invalidateAgentsCache();
+    }
+    if (ctx.hasUI) {
+        ctx.ui.notify('Failed to register after multiple attempts due to name conflicts', 'error');
+    }
+    return false;
+}
+export function updateRegistration(state, dirs, ctx) {
+    if (!state.registered)
+        return;
+    const regPath = getRegistrationPath(state, dirs);
+    if (!fs.existsSync(regPath))
+        return;
+    try {
+        const reg = applyRegistrationDefaults(JSON.parse(fs.readFileSync(regPath, 'utf-8')));
+        const currentModel = ctx.model?.id ??
+            (typeof ctx.model === 'string' ? ctx.model : reg.model);
+        const currentSessionId = getContextSessionId(ctx);
+        reg.model = currentModel;
+        reg.sessionId = currentSessionId;
+        state.model = currentModel;
+        state.contextSessionId = currentSessionId;
+        reg.reservations = state.reservations.length > 0 ? state.reservations : undefined;
+        if (state.spec) {
+            reg.spec = state.spec;
+        }
+        else {
+            delete reg.spec;
+        }
+        reg.session = { ...state.session };
+        reg.activity = { ...state.activity };
+        reg.statusMessage = state.statusMessage;
+        fs.writeFileSync(regPath, JSON.stringify(updateChannelsInRegistration(state, reg), null, 2));
+    }
+    catch {
+        // Ignore errors
+    }
+}
+export function flushActivityToRegistry(state, dirs, ctx) {
+    if (!state.registered)
+        return;
+    const regPath = getRegistrationPath(state, dirs);
+    if (!fs.existsSync(regPath))
+        return;
+    try {
+        const reg = applyRegistrationDefaults(JSON.parse(fs.readFileSync(regPath, 'utf-8')));
+        const currentModel = ctx.model?.id ??
+            (typeof ctx.model === 'string' ? ctx.model : reg.model);
+        const currentSessionId = getContextSessionId(ctx);
+        reg.model = currentModel;
+        reg.sessionId = currentSessionId;
+        state.model = currentModel;
+        state.contextSessionId = currentSessionId;
+        reg.session = { ...state.session };
+        reg.activity = { ...state.activity };
+        reg.statusMessage = state.statusMessage;
+        fs.writeFileSync(regPath, JSON.stringify(updateChannelsInRegistration(state, reg), null, 2));
+    }
+    catch {
+        // Ignore errors
+    }
+}
+export function syncChannelsToRegistration(state, dirs) {
+    if (!state.registered)
+        return;
+    const regPath = getRegistrationPath(state, dirs);
+    if (!fs.existsSync(regPath))
+        return;
+    try {
+        const reg = applyRegistrationDefaults(JSON.parse(fs.readFileSync(regPath, 'utf-8')));
+        fs.writeFileSync(regPath, JSON.stringify(updateChannelsInRegistration(state, reg), null, 2));
+    }
+    catch {
+        // Ignore errors
+    }
+}
+export function unregister(state, dirs) {
+    if (!state.registered)
+        return;
+    try {
+        fs.unlinkSync(getRegistrationPath(state, dirs));
+    }
+    catch {
+        // Ignore errors
+    }
+    state.registered = false;
+    invalidateAgentsCache();
+}
+export function rebindContextSession(state, dirs, ctx) {
+    const currentContextSessionId = getContextSessionId(ctx);
+    const previousContextSessionId = state.contextSessionId;
+    const previousCurrentChannel = state.currentChannel;
+    const previousSessionChannel = state.sessionChannel;
+    const previousJoinedChannels = JSON.stringify(state.joinedChannels);
+    const inheritedChannel = process.env.PI_MESSENGER_CHANNEL?.trim();
+    const shouldRebind = (!!inheritedChannel && !state.sessionChannel) ||
+        (!!currentContextSessionId && currentContextSessionId !== previousContextSessionId);
+    if (!shouldRebind) {
+        return {
+            changed: false,
+            previousCurrentChannel,
+            previousSessionChannel,
+            previousContextSessionId,
+            currentContextSessionId,
+        };
+    }
+    ensureStateChannels(state, dirs, ctx);
+    state.contextSessionId = currentContextSessionId;
+    const changed = previousCurrentChannel !== state.currentChannel ||
+        previousSessionChannel !== state.sessionChannel ||
+        previousContextSessionId !== currentContextSessionId ||
+        previousJoinedChannels !== JSON.stringify(state.joinedChannels);
+    if (changed && state.registered) {
+        updateRegistration(state, dirs, ctx);
+    }
+    return {
+        changed,
+        previousCurrentChannel,
+        previousSessionChannel,
+        previousContextSessionId,
+        currentContextSessionId,
+    };
+}
+export function renameAgent(state, dirs, ctx, newName, deliverFn) {
+    if (!state.registered) {
+        return { success: false, error: 'not_registered' };
+    }
+    if (!isValidAgentName(newName)) {
+        return { success: false, error: 'invalid_name' };
+    }
+    if (newName === state.agentName) {
+        return { success: false, error: 'same_name' };
+    }
+    const newRegPath = join(dirs.registry, `${newName}.json`);
+    if (fs.existsSync(newRegPath)) {
+        try {
+            const existing = JSON.parse(fs.readFileSync(newRegPath, 'utf-8'));
+            const effectivePid = state.callerPid ?? process.pid;
+            if (isProcessAlive(existing.pid) && existing.pid !== effectivePid) {
+                return { success: false, error: 'name_taken' };
+            }
+        }
+        catch {
+            // Malformed file, we can overwrite
+        }
+    }
+    const oldName = state.agentName;
+    const oldRegPath = getRegistrationPath(state, dirs);
+    const cwd = normalizeCwd(ctx.cwd ?? process.cwd());
+    const gitBranch = getGitBranch(cwd);
+    const now = new Date().toISOString();
+    const effectivePid = state.callerPid ?? process.pid;
+    const registration = {
+        name: newName,
+        pid: effectivePid,
+        sessionId: getContextSessionId(ctx),
+        cwd,
+        model: ctx.model?.id ??
+            (typeof ctx.model === 'string' ? ctx.model : 'unknown'),
+        startedAt: now,
+        reservations: state.reservations.length > 0 ? state.reservations : undefined,
+        gitBranch,
+        spec: state.spec,
+        isHuman: state.isHuman,
+        session: { ...state.session },
+        activity: { lastActivityAt: now },
+        statusMessage: state.statusMessage,
+        currentChannel: state.currentChannel,
+        sessionChannel: state.sessionChannel,
+        joinedChannels: [...state.joinedChannels],
+    };
+    ensureDirSync(dirs.registry);
+    try {
+        fs.writeFileSync(join(dirs.registry, `${newName}.json`), JSON.stringify(registration, null, 2));
+    }
+    catch {
+        return { success: false, error: 'invalid_name' };
+    }
+    let verified = false;
+    let verifyError = false;
+    try {
+        const written = JSON.parse(fs.readFileSync(newRegPath, 'utf-8'));
+        verified = written.pid === effectivePid;
+    }
+    catch {
+        verifyError = true;
+    }
+    if (!verified) {
+        if (verifyError) {
+            try {
+                const checkReg = JSON.parse(fs.readFileSync(newRegPath, 'utf-8'));
+                if (checkReg.pid === effectivePid) {
+                    fs.unlinkSync(newRegPath);
+                }
+            }
+            catch {
+                // Best effort cleanup
+            }
+        }
+        return { success: false, error: 'race_lost' };
+    }
+    try {
+        fs.unlinkSync(oldRegPath);
+    }
+    catch {
+        // Ignore - old file might already be gone
+    }
+    state.agentName = newName;
+    state.model =
+        ctx.model?.id ??
+            (typeof ctx.model === 'string' ? ctx.model : 'unknown');
+    state.gitBranch = gitBranch;
+    state.sessionStartedAt = now;
+    state.activity.lastActivityAt = now;
+    invalidateAgentsCache();
+    return { success: true, oldName, newName };
+}
+export function joinChannel(state, dirs, channelId, options) {
+    if (!isValidChannelId(channelId)) {
+        return { success: false, error: 'invalid_channel' };
+    }
+    const normalizedRequested = normalizeChannelId(channelId);
+    const existedBefore = !!getChannel(dirs, normalizedRequested);
+    const record = ensureExistingOrCreateChannel(dirs, channelId, {
+        create: options?.create,
+        createdBy: state.agentName || undefined,
+        description: options?.description,
+    });
+    if (!record) {
+        return { success: false, error: 'not_found' };
+    }
+    const normalized = normalizeChannelId(record.id);
+    const wasCurrent = state.currentChannel === normalized;
+    const alreadyJoined = state.joinedChannels.includes(normalized);
+    if (!alreadyJoined) {
+        state.joinedChannels = [...state.joinedChannels, normalized];
+    }
+    state.currentChannel = normalized;
+    syncChannelsToRegistration(state, dirs);
+    return {
+        success: true,
+        channel: normalized,
+        created: !existedBefore,
+        switched: !wasCurrent,
+        alreadyJoined,
+    };
+}

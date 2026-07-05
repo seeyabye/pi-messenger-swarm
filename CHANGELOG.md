@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.25.21-seeyabye.2](https://github.com/seeyabye/pi-messenger-swarm/compare/v0.25.21-seeyabye.1...v0.25.21-seeyabye.2) (2026-07-05)
+
+
+### Bug Fixes
+
+* **deps:** move @earendil-works/pi-coding-agent to dependencies ([5ade5bd](https://github.com/seeyabye/pi-messenger-swarm/commit/5ade5bd80c8533dd253c1f0f7408ba4b35ac1921))
+
 ### [0.25.21-seeyabye.1](https://github.com/seeyabye/pi-messenger-swarm/compare/v0.25.21-custom...v0.25.21-seeyabye.1) (2026-07-05)
 
 

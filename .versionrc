@@ -1,7 +1,11 @@
 {
   "tag-prefix": "v",
   "prerelease": "seeyabye",
+  "commitAll": true,
   "releaseCommitMessageFormat": "chore(release): {{currentTag}}",
+  "scripts": {
+    "precommit": "npm run build && git add dist"
+  },
   "commitUrlFormat": "https://github.com/seeyabye/pi-messenger-swarm/commit/{{hash}}",
   "compareUrlFormat": "https://github.com/seeyabye/pi-messenger-swarm/compare/{{previousTag}}...{{currentTag}}",
   "issueUrlFormat": "https://github.com/seeyabye/pi-messenger-swarm/issues/{{id}}",
