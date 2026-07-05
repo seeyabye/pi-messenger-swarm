@@ -1,0 +1,11 @@
+{
+  "tag-prefix": "v",
+  "prerelease": "seeyabye",
+  "releaseCommitMessageFormat": "chore(release): {{currentTag}}",
+  "commitUrlFormat": "https://github.com/seeyabye/pi-messenger-swarm/commit/{{hash}}",
+  "compareUrlFormat": "https://github.com/seeyabye/pi-messenger-swarm/compare/{{previousTag}}...{{currentTag}}",
+  "issueUrlFormat": "https://github.com/seeyabye/pi-messenger-swarm/issues/{{id}}",
+  "skip": {
+    "cherry-pick": false
+  }
+}

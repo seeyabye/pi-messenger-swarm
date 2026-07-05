@@ -1,17 +1,17 @@
 {
   "name": "@seeyabye/pi-messenger-swarm",
-  "version": "0.25.21",
+  "version": "0.25.21-seeyabye.1",
   "description": "Swarm-first multi-agent messaging and task orchestration extension for Pi",
   "type": "module",
   "author": "Tom X Nguyen",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/monotykamary/pi-messenger-swarm.git"
+    "url": "git+https://github.com/seeyabye/pi-messenger-swarm.git"
   },
-  "homepage": "https://github.com/monotykamary/pi-messenger-swarm#readme",
+  "homepage": "https://github.com/seeyabye/pi-messenger-swarm#readme",
   "bugs": {
-    "url": "https://github.com/monotykamary/pi-messenger-swarm/issues"
+    "url": "https://github.com/seeyabye/pi-messenger-swarm/issues"
   },
   "keywords": [
     "pi-package",
