@@ -9,6 +9,7 @@ import { generateMemorableName } from '../lib.js';
 import { createProgress, parseJsonlLine, updateProgress } from './progress.js';
 import { logFeedEvent } from '../feed/index.js';
 import { removeLiveWorker, updateLiveWorker } from './live-progress.js';
+import { getMessengerBase } from '../store/shared.js';
 import type { SpawnRequest, SpawnedAgent } from './types.js';
 import { formatRoleLabel } from './labels.js';
 import { loadAgentDefinition } from './agent-loader.js';
@@ -47,14 +48,14 @@ interface SpawnEvent {
   agent: Partial<SpawnedAgent>;
 }
 
-function getAgentEventsJsonlPath(cwd: string, sessionId: string): string {
+export function getAgentEventsJsonlPath(cwd: string, sessionId: string): string {
   const safeSessionId = sessionId.replace(/[^\w.-]/g, '_');
-  return path.join(cwd, '.pi', 'messenger', 'agents', `${safeSessionId}.jsonl`);
+  return path.join(getMessengerBase(cwd), 'agents', `${safeSessionId}.jsonl`);
 }
 
 function getAgentDefinitionsDir(cwd: string, sessionId: string): string {
   const safeSessionId = sessionId.replace(/[^\w.-]/g, '_');
-  return path.join(cwd, '.pi', 'messenger', 'agents', safeSessionId);
+  return path.join(getMessengerBase(cwd), 'agents', safeSessionId);
 }
 
 function agentFilePath(cwd: string, sessionId: string, name: string, id: string): string {

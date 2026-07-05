@@ -63,6 +63,36 @@ export function isSameProject(a: string, b: string): boolean {
   return ra === rb;
 }
 
+/**
+ * Resolve the messenger data-directory base for a given cwd, honoring the
+ * same env-priority contract as harness/paths.ts resolveMessengerDirs():
+ *
+ *   1. PI_MESSENGER_DIR env  — explicit override (set by the extension on
+ *      the long-lived harness server process, and inherited by every
+ *      spawned agent). Highest.
+ *   2. PI_MESSENGER_GLOBAL=1 — shared homedir dir.
+ *   3. resolveProjectRoot(cwd)/.pi/messenger — project-scoped default.
+ *
+ * This exists so that store/path-derivation code (which historically joined
+ * `<cwd>/.pi/messenger` directly) can resolve the SAME base the harness
+ * uses, without threading the `dirs` object through every call site. It is
+ * what makes worktree delegation work: a worker spawned into a git
+ * worktree inherits PI_MESSENGER_DIR pointing at the main project, so its
+ * spawn-event log, tasks, and feed land in the main project's
+ * .pi/messenger — visible to the main session's poll — instead of a
+ * worktree-local .pi/messenger that the main session never reads.
+ *
+ * `env` defaults to process.env and is injectable for tests.
+ */
+export function getMessengerBase(
+  cwd: string,
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>
+): string {
+  if (env.PI_MESSENGER_DIR) return env.PI_MESSENGER_DIR;
+  if (env.PI_MESSENGER_GLOBAL === '1') return join(getAgentDir(), 'messenger');
+  return join(resolveProjectRoot(normalizeCwd(cwd)), '.pi', 'messenger');
+}
+
 export function getGitBranch(cwd: string): string | undefined {
   try {
     const result = execSync('git branch --show-current', {
@@ -128,7 +158,7 @@ export function getContextSessionId(ctx: ExtensionContext): string {
  */
 export function getProjectChannelSessionId(cwd: string, channelId: string): string | null {
   const normalized = normalizeChannelId(channelId);
-  const channelPath = join(cwd, '.pi', 'messenger', 'channels', `${normalized}.jsonl`);
+  const channelPath = join(getMessengerBase(cwd), 'channels', `${normalized}.jsonl`);
   try {
     if (!fs.existsSync(channelPath)) return null;
     const content = fs.readFileSync(channelPath, 'utf-8');

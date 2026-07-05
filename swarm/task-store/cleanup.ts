@@ -5,13 +5,14 @@ import { logFeedEvent } from '../../feed/index.js';
 import { appendTaskEvent } from './events.js';
 import { replayTasks } from './events.js';
 import { findSpawnedAgentByName } from '../spawn.js';
+import { getMessengerBase } from '../../store/shared.js';
 
 /**
  * Check if an agent is active based on registry file and PID.
  * Returns: true (active), false (crashed/dead), null (unknown/no registry)
  */
 function isAgentActive(cwd: string, agentName: string): boolean | null {
-  const regPath = path.join(cwd, '.pi', 'messenger', 'registry', `${agentName}.json`);
+  const regPath = path.join(getMessengerBase(cwd), 'registry', `${agentName}.json`);
   if (!fs.existsSync(regPath)) return null;
 
   try {
@@ -42,7 +43,7 @@ function isSpawnedAgentVouchedFor(cwd: string, sessionId: string, agentName: str
  * Returns the number of claims that were cleaned up.
  */
 export function cleanupStaleTaskClaims(cwd: string, sessionId: string): number {
-  const registryDir = path.join(cwd, '.pi', 'messenger', 'registry');
+  const registryDir = path.join(getMessengerBase(cwd), 'registry');
   if (!fs.existsSync(registryDir)) return 0;
 
   // Use replayTasks directly instead of getTasks to avoid triggering cleanup recursively
