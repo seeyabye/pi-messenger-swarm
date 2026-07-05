@@ -66,10 +66,12 @@
       "prettier --write"
     ]
   },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.4"
+  },
   "devDependencies": {
     "@commitlint/cli": "21.0.1",
     "@commitlint/config-conventional": "21.0.1",
-    "@earendil-works/pi-coding-agent": "0.79.4",
     "@earendil-works/pi-tui": "0.79.4",
     "@types/node": "25.9.1",
     "@vitest/coverage-v8": "4.1.7",
