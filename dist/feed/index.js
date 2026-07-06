@@ -8,11 +8,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { normalizeChannelId, channelPath, appendChannelEventLine, pruneChannelEvents, isMetaHeader, } from '../channel.js';
+import { getMessengerBase } from '../store/shared.js';
 const FEED_CACHE_TTL_MS = 100;
 const feedCache = new Map();
 function unifiedChannelPath(cwd, channelId) {
     // Construct a minimal Dirs-like structure for path resolution
-    const base = path.join(cwd, '.pi', 'messenger');
+    const base = getMessengerBase(cwd);
     return channelPath({ base, registry: '' }, channelId);
 }
 export function invalidateFeedCache(cwd, channelId) {
@@ -127,7 +128,7 @@ export function appendFeedEvent(cwd, event, channelId) {
         const sanitized = sanitizeFeedEvent({ ...event, channel: normalizeChannelId(channelId) });
         const eventLine = JSON.stringify(sanitized);
         // Use the channel module's append function for unified storage
-        const baseDir = path.join(cwd, '.pi', 'messenger');
+        const baseDir = getMessengerBase(cwd);
         const mockDirs = { base: baseDir, registry: '' };
         appendChannelEventLine(mockDirs, channelId, eventLine);
         invalidateFeedCache(cwd, channelId);
@@ -169,7 +170,7 @@ export function getFeedLineCount(cwd, channelId) {
     return entry?.events.length ?? 0;
 }
 export function pruneFeed(cwd, maxEvents, channelId) {
-    const baseDir = path.join(cwd, '.pi', 'messenger');
+    const baseDir = getMessengerBase(cwd);
     const mockDirs = { base: baseDir, registry: '' };
     pruneChannelEvents(mockDirs, channelId, maxEvents);
     invalidateFeedCache(cwd, channelId);

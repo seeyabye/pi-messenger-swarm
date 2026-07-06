@@ -29,15 +29,62 @@ export function normalizeCwd(cwd: string): string {
 }
 
 /**
+ * Resolve a git worktree's main repository root.
+ *
+ * A linked worktree's `.git` is a *file* (a `gitdir: <path>` pointer), not
+ * a directory. That file points at `<main>/.git/worktrees/<name>`, whose
+ * `commondir` file points back at the shared `<main>/.git` object store.
+ * The parent of that common dir is the main repository root.
+ *
+ * Returns null when `dir` is not a worktree (`.git` is a directory or
+ * absent) or when the worktree metadata can't be read, so callers can fall
+ * back to treating `dir` itself as the project root.
+ */
+function resolveWorktreeMainRoot(dir: string): string | null {
+  try {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(join(dir, '.git'));
+    } catch {
+      return null;
+    }
+    if (!stat.isFile()) return null;
+    const content = fs.readFileSync(join(dir, '.git'), 'utf-8').trim();
+    if (!content.startsWith('gitdir:')) return null;
+    const gitdir = resolve(dir, content.slice('gitdir:'.length).trim());
+    const commondirRaw = fs.readFileSync(join(gitdir, 'commondir'), 'utf-8').trim();
+    const commonDir = resolve(gitdir, commondirRaw);
+    const mainRoot = dirname(commonDir);
+    if (mainRoot && mainRoot !== dir && fs.existsSync(join(mainRoot, '.git'))) {
+      return mainRoot;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Walk up from `start` to find the nearest ancestor containing `.git/` or
  * `.pi/`. Falls back to `start` itself. Mirrors the harness CLI's
  * `resolveProjectRoot` so the extension and harness agree on what counts as
  * "the same project" even when invoked from a subdirectory.
+ *
+ * Worktree-aware: when a `.git` entry is a *file* (a linked worktree's
+ * `gitdir:` pointer), resolve to the main repository root rather than
+ * stopping at the worktree. This keeps swarm state in the main project's
+ * `.pi/messenger` — visible to the main session's poll — instead of
+ * fragmenting into a worktree-local dir the session never reads.
  */
 export function resolveProjectRoot(start: string): string {
   let dir = start;
   for (let i = 0; i < 20; i++) {
-    if (fs.existsSync(join(dir, '.git')) || fs.existsSync(join(dir, '.pi'))) {
+    if (fs.existsSync(join(dir, '.git'))) {
+      const worktreeMain = resolveWorktreeMainRoot(dir);
+      if (worktreeMain) return worktreeMain;
+      return dir;
+    }
+    if (fs.existsSync(join(dir, '.pi'))) {
       return dir;
     }
     const parent = dirname(dir);
@@ -64,31 +111,32 @@ export function isSameProject(a: string, b: string): boolean {
 }
 
 /**
- * Resolve the messenger data-directory base for a given cwd, honoring the
- * same env-priority contract as harness/paths.ts resolveMessengerDirs():
+ * Resolve the messenger data-directory base for a given cwd.
  *
- *   1. PI_MESSENGER_DIR env  — explicit override (set by the extension on
- *      the long-lived harness server process, and inherited by every
- *      spawned agent). Highest.
- *   2. PI_MESSENGER_GLOBAL=1 — shared homedir dir.
- *   3. resolveProjectRoot(cwd)/.pi/messenger — project-scoped default.
+ * Resolution priority:
+ *   1. PI_MESSENGER_GLOBAL=1 → shared homedir dir.
+ *   2. resolveProjectRoot(cwd)/.pi/messenger — project-scoped default
+ *      (worktree-aware: a worktree cwd resolves to its main repo root).
  *
- * This exists so that store/path-derivation code (which historically joined
- * `<cwd>/.pi/messenger` directly) can resolve the SAME base the harness
- * uses, without threading the `dirs` object through every call site. It is
- * what makes worktree delegation work: a worker spawned into a git
- * worktree inherits PI_MESSENGER_DIR pointing at the main project, so its
- * spawn-event log, tasks, and feed land in the main project's
- * .pi/messenger — visible to the main session's poll — instead of a
- * worktree-local .pi/messenger that the main session never reads.
+ * Deliberately does NOT honor `PI_MESSENGER_DIR` from the env. That variable
+ * is pinned to a single project on the long-lived *shared* harness server
+ * process by whichever session started it. The store/path-derivation code
+ * runs server-side, so reading `process.env.PI_MESSENGER_DIR` here would
+ * route every project's spawn-event logs, tasks, and feed into the
+ * server-startup project — silently fragmenting state across projects and
+ * worktrees. Per-request resolution is cwd-based instead, mirroring
+ * harness/paths.ts `resolveMessengerDirs` (which ignores the server env
+ * whenever a cwd is provided). A user-set `PI_MESSENGER_DIR` override is
+ * still honored for the main dirs (registry/channel/session-id) via the
+ * `x-messenger-dir` header → server `overrideBase`.
  *
- * `env` defaults to process.env and is injectable for tests.
+ * `env` defaults to process.env and is injectable for tests (only
+ * `PI_MESSENGER_GLOBAL` is consulted).
  */
 export function getMessengerBase(
   cwd: string,
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>
 ): string {
-  if (env.PI_MESSENGER_DIR) return env.PI_MESSENGER_DIR;
   if (env.PI_MESSENGER_GLOBAL === '1') return join(getAgentDir(), 'messenger');
   return join(resolveProjectRoot(normalizeCwd(cwd)), '.pi', 'messenger');
 }
@@ -200,11 +248,7 @@ export function getEffectiveSessionId(cwd: string, state: MessengerState): strin
   // sessions in the same project each resolve their own id; fall back to the
   // singleton. This runs in-process, so process.pid is the current session.
   try {
-    const baseDir =
-      process.env.PI_MESSENGER_DIR ||
-      (process.env.PI_MESSENGER_GLOBAL === '1'
-        ? join(getAgentDir(), 'messenger')
-        : join(cwd, '.pi/messenger'));
+    const baseDir = getMessengerBase(cwd);
     // Per-pid first (concurrent-session safe). A missing per-pid file is not
     // an error — swallow it so the singleton fallback below still runs.
     const perPidPath = join(baseDir, 'sessions', String(process.pid));

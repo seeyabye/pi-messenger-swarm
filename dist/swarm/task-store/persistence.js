@@ -1,16 +1,17 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { getMessengerBase } from '../../store/shared.js';
 function ensureDir(dir) {
     if (!fs.existsSync(dir))
         fs.mkdirSync(dir, { recursive: true });
 }
 export function getTasksJsonlPath(cwd, sessionId) {
     const safeSessionId = sessionId.replace(/[^\w.-]/g, '_');
-    return path.join(cwd, '.pi', 'messenger', 'tasks', `${safeSessionId}.jsonl`);
+    return path.join(getMessengerBase(cwd), 'tasks', `${safeSessionId}.jsonl`);
 }
 export function getTaskSpecsDir(cwd, sessionId) {
     const safeSessionId = sessionId.replace(/[^\w.-]/g, '_');
-    return path.join(cwd, '.pi', 'messenger', 'tasks', safeSessionId);
+    return path.join(getMessengerBase(cwd), 'tasks', safeSessionId);
 }
 export function taskSpecPath(cwd, sessionId, taskId) {
     return path.join(getTaskSpecsDir(cwd, sessionId), `${taskId}.md`);

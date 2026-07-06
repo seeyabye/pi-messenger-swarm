@@ -76,30 +76,35 @@ function createRepoWithWorktree(): { main: string; worktree: string } {
   return { main, worktree };
 }
 
-describe('worktree delegation: shared messenger dir via PI_MESSENGER_DIR', () => {
-  it('getMessengerBase returns the main project dir for both main repo and worktree cwd', () => {
+describe('worktree delegation: shared messenger dir via cwd resolution', () => {
+  it('getMessengerBase resolves a worktree cwd back to the main repo root', () => {
     const { main, worktree } = createRepoWithWorktree();
-    const mainMessenger = path.join(main, '.pi', 'messenger');
-    process.env.PI_MESSENGER_DIR = mainMessenger;
+    const mainMessenger = path.join(normalizeCwd(main), '.pi', 'messenger');
+
+    // No PI_MESSENGER_DIR env pin — resolution is purely cwd-based now.
+    delete process.env.PI_MESSENGER_DIR;
 
     // From the main repo cwd
     expect(getMessengerBase(main)).toBe(mainMessenger);
-    // From the worktree cwd — this is the fix. Previously path.join(worktree,
-    // '.pi/messenger') would have pointed at the worktree's own dir.
+    // From the worktree cwd — the worktree's `.git` is a *file* (gitdir
+    // pointer). resolveProjectRoot follows it back to the main repo root so
+    // the base is the main project's .pi/messenger, not a worktree-local one.
     expect(getMessengerBase(worktree)).toBe(mainMessenger);
     expect(getMessengerBase(worktree)).not.toContain('wt-tree');
   });
 
   it('spawn-event log for a worktree cwd lands in the main project dir', () => {
     const { main, worktree } = createRepoWithWorktree();
-    const mainMessenger = path.join(main, '.pi', 'messenger');
-    process.env.PI_MESSENGER_DIR = mainMessenger;
+    const mainMessenger = path.join(normalizeCwd(main), '.pi', 'messenger');
+    delete process.env.PI_MESSENGER_DIR;
 
     const sessionId = 'worktree-session';
     // Worker cwd is the worktree; event should still be written under main.
     const eventsPath = getAgentEventsJsonlPath(worktree, sessionId);
     expect(eventsPath.startsWith(mainMessenger)).toBe(true);
-    expect(eventsPath.startsWith(path.join(worktree, '.pi', 'messenger'))).toBe(false);
+    expect(eventsPath.startsWith(path.join(normalizeCwd(worktree), '.pi', 'messenger'))).toBe(
+      false
+    );
 
     // Write a spawn event using the worktree cwd and confirm the main
     // project's loadSpawnedAgents observes it. We write the JSONL line
@@ -133,19 +138,19 @@ describe('worktree delegation: shared messenger dir via PI_MESSENGER_DIR', () =>
 
   it('task paths for a worktree cwd land in the main project dir', () => {
     const { main, worktree } = createRepoWithWorktree();
-    const mainMessenger = path.join(main, '.pi', 'messenger');
-    process.env.PI_MESSENGER_DIR = mainMessenger;
+    const mainMessenger = path.join(normalizeCwd(main), '.pi', 'messenger');
+    delete process.env.PI_MESSENGER_DIR;
 
     const sessionId = 'worktree-session';
     const taskPath = getTasksJsonlPath(worktree, sessionId);
     expect(taskPath.startsWith(mainMessenger)).toBe(true);
-    expect(taskPath.startsWith(path.join(worktree, '.pi', 'messenger'))).toBe(false);
+    expect(taskPath.startsWith(path.join(normalizeCwd(worktree), '.pi', 'messenger'))).toBe(false);
   });
 
   it('feed events posted from a worktree cwd land in the main project channel file', () => {
     const { main, worktree } = createRepoWithWorktree();
-    const mainMessenger = path.join(main, '.pi', 'messenger');
-    process.env.PI_MESSENGER_DIR = mainMessenger;
+    const mainMessenger = path.join(normalizeCwd(main), '.pi', 'messenger');
+    delete process.env.PI_MESSENGER_DIR;
 
     const channelId = 'memory';
     // Ensure the named channel exists (metadata header) under the main dir.
@@ -172,24 +177,19 @@ describe('worktree delegation: shared messenger dir via PI_MESSENGER_DIR', () =>
     expect(ours.length).toBe(1);
   });
 
-  it('falls back to resolveProjectRoot(cwd)/.pi/messenger when PI_MESSENGER_DIR is unset', () => {
-    delete process.env.PI_MESSENGER_DIR;
+  it('PI_MESSENGER_DIR env no longer overrides cwd-based resolution (server pin is ignored)', () => {
+    // The store code runs server-side, where process.env.PI_MESSENGER_DIR is
+    // the shared harness server's startup pin — belonging to whichever
+    // session started it, NOT necessarily the requesting project. Honoring
+    // it would route every project's state into the server-startup project.
+    // getMessengerBase now resolves from cwd (worktree-aware) and ignores
+    // the env pin, so a stale/foreign pin cannot fragment state.
     const { main, worktree } = createRepoWithWorktree();
+    const foreignDir = path.join(tempDir('pi-messenger-foreign-'), '.pi', 'messenger');
+    process.env.PI_MESSENGER_DIR = foreignDir;
 
-    // Without the env pin, each cwd resolves to its own project root —
-    // i.e. the pre-isolation behavior is preserved when no harness pin is
-    // present. This guards against regressing the default project-scoped
-    // mode.
-    const mainBase = getMessengerBase(main);
-    const wtBase = getMessengerBase(worktree);
-    // normalizeCwd resolves symlinks (e.g. /var -> /private/var on macOS),
-    // so compare against the normalized main path.
-    expect(mainBase).toBe(path.join(normalizeCwd(main), '.pi', 'messenger'));
-    // The worktree's .git is a *file* (gitdir pointer). resolveProjectRoot
-    // stops at the first ancestor with .git (file or dir), so the worktree
-    // root itself qualifies — its base is worktree-local. This documents why
-    // the env pin is required for worktree delegation to work.
-    expect(wtBase).toBe(path.join(normalizeCwd(worktree), '.pi', 'messenger'));
-    expect(wtBase).not.toBe(mainBase);
+    expect(getMessengerBase(main)).toBe(path.join(normalizeCwd(main), '.pi', 'messenger'));
+    expect(getMessengerBase(worktree)).toBe(path.join(normalizeCwd(main), '.pi', 'messenger'));
+    expect(getMessengerBase(worktree)).not.toBe(foreignDir);
   });
 });

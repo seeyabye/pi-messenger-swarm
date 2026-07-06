@@ -51,6 +51,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as http from 'node:http';
 import { resolveSessionId } from './session-id.js';
+import { resolveProjectRoot } from '../store/shared.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PI_MESSENGER_PORT ?? 9877);
@@ -122,6 +123,7 @@ function isPidAlive(pid) {
         return false;
     }
 }
+let _cachedCallerPid = null;
 /**
  * Walk the process tree to find the parent "pi" process PID.
  *
@@ -133,8 +135,16 @@ function isPidAlive(pid) {
  * levels using `ps` to find a process named "pi".
  *
  * Returns undefined when not running inside pi (human terminal, CI, etc.).
+ * Memoized: the CLI is short-lived and `agentHeaders()` alone would
+ * otherwise call this 3+ times (each shelling out to `ps`).
  */
 function findCallerPid() {
+    if (_cachedCallerPid !== null)
+        return _cachedCallerPid;
+    _cachedCallerPid = computeCallerPid();
+    return _cachedCallerPid;
+}
+function computeCallerPid() {
     try {
         // Fast path: direct parent is pi (wrapper replaces bash via exec)
         const ppid = process.ppid;
@@ -166,6 +176,62 @@ function findCallerPid() {
     return undefined;
 }
 /**
+ * Read another process's working directory. Linux exposes it as a symlink
+ * at /proc/<pid>/cwd; macOS/BSD report it via `lsof -d cwd`. Returns
+ * undefined when the pid is gone, the platform is unsupported, or the
+ * lookup fails.
+ */
+function readProcessCwd(pid) {
+    try {
+        const link = fs.readlinkSync(`/proc/${pid}/cwd`);
+        if (link)
+            return link;
+    }
+    catch {
+        // Not Linux, or permission denied — fall through to lsof.
+    }
+    try {
+        const out = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null`, {
+            encoding: 'utf-8',
+            timeout: 1500,
+        });
+        const line = out.split('\n').find((l) => l.startsWith('n'));
+        if (line) {
+            const cwd = line.slice(1).trim();
+            if (cwd)
+                return cwd;
+        }
+    }
+    catch {
+        // lsof unavailable or pid gone
+    }
+    return undefined;
+}
+/**
+ * Resolve the pi SESSION's cwd — the parent `pi` process's working
+ * directory — rather than this CLI's own cwd (the bash tool's cwd, often a
+ * subdirectory or a git worktree).
+ *
+ * The CLI runs as a child of pi's bash tool: `pi → bash -c "..." → node`.
+ * When the agent `cd`s into a worktree, the bash cwd is the worktree, but
+ * the parent pi process's cwd is still the project root where the session
+ * was launched. Rooting `.pi/messenger` at the session cwd (not the bash
+ * cwd) keeps all swarm state in the main project, visible to the session's
+ * poll — instead of fragmenting into worktree-local dirs.
+ *
+ * Falls back to `callerCwd()` when the parent pi process can't be found
+ * (human terminal, CI, etc.).
+ */
+function resolveSessionCwd() {
+    const pid = findCallerPid();
+    if (pid) {
+        const cwd = readProcessCwd(pid);
+        if (cwd)
+            return cwd;
+    }
+    return callerCwd();
+}
+/**
  * Read the agent name from the registration file that matches the
  * caller's PID. This covers the coordinator (main pi session) which
  * doesn't have PI_AGENT_NAME in its env but IS registered with the
@@ -180,7 +246,7 @@ function findCallerPid() {
  */
 function readRegistrationName() {
     try {
-        const projectRoot = resolveProjectRoot(callerCwd());
+        const projectRoot = resolveProjectRoot(resolveSessionCwd());
         const registryDir = path.join(projectRoot, '.pi', 'messenger', 'registry');
         if (!fs.existsSync(registryDir))
             return undefined;
@@ -243,7 +309,7 @@ function readRegistrationName() {
  */
 function readSessionIdFromFile() {
     try {
-        const projectRoot = resolveProjectRoot(callerCwd());
+        const projectRoot = resolveProjectRoot(resolveSessionCwd());
         // Prefer the per-pid entry so concurrent pi sessions in the same project
         // each resolve their own session id. Falls back to the singleton when no
         // per-pid entry exists or the caller pid can't be resolved. See
@@ -279,10 +345,11 @@ function agentHeaders() {
     const sessionId = readSessionIdFromFile();
     if (sessionId)
         headers['x-session-id'] = sessionId;
-    // Send the project root (not the raw cwd) so the harness server
-    // resolves dirs consistently regardless of which subdirectory
-    // the CLI was invoked from.
-    headers['x-caller-cwd'] = resolveProjectRoot(callerCwd());
+    // Send the SESSION's project root (the parent pi process's cwd), not the
+    // bash tool's cwd. The bash cwd is often a subdirectory or a git worktree
+    // of the session's project; rooting the server's dir resolution at the
+    // session cwd keeps all swarm state in the main project's .pi/messenger.
+    headers['x-caller-cwd'] = resolveProjectRoot(resolveSessionCwd());
     // Forward PI_MESSENGER_CHANNEL as a request header so that spawned
     // subagents (which inherit this env var from their parent) can join
     // the parent's channel. The harness server only uses this hint when
@@ -318,19 +385,6 @@ async function isUp() {
 function callerCwd() {
     return process.env.PI_MESSENGER_CALLER_CWD || process.cwd();
 }
-function resolveProjectRoot(start) {
-    let dir = start;
-    for (let i = 0; i < 20; i++) {
-        if (fs.existsSync(path.join(dir, '.git')) || fs.existsSync(path.join(dir, '.pi'))) {
-            return dir;
-        }
-        const parent = path.dirname(dir);
-        if (parent === dir)
-            break;
-        dir = parent;
-    }
-    return start;
-}
 async function startServer() {
     if (await isUp())
         return true;
@@ -351,10 +405,11 @@ async function startServer() {
     // regardless of which agent actually issued the request.
     //
     // Similarly, always explicitly set PI_MESSENGER_CWD and PI_MESSENGER_DIR
-    // to the project root (the nearest .git/ or .pi/ ancestor). Without this,
-    // if the CLI runs from a subdirectory like dist/, the harness server would
-    // use dist/.pi/messenger/ instead of the project's root .pi/messenger/.
-    const projectRoot = resolveProjectRoot(callerCwd());
+    // to the session's project root (the parent pi process's cwd resolved to
+    // the nearest .git/ or .pi/ ancestor). Without this, if the CLI runs from
+    // a subdirectory like dist/ or a git worktree, the harness server would
+    // use that subdirectory's .pi/messenger/ instead of the project root's.
+    const projectRoot = resolveProjectRoot(resolveSessionCwd());
     const projectMessengerDir = path.join(projectRoot, '.pi', 'messenger');
     const env = {};
     for (const key of ['PI_MESSENGER_GLOBAL']) {

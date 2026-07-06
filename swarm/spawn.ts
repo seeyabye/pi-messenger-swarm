@@ -531,8 +531,24 @@ export function spawnSubagent(
 
   generateAgentFile(cwd, sessionId, record);
 
+  // Strip the harness server's PI_MESSENGER_DIR / PI_MESSENGER_CWD pins.
+  // The server is a long-lived *shared* daemon — its env pin belongs to
+  // whichever session started it, which may be a different project than
+  // the one requesting this spawn. If a spawned agent inherited that pin,
+  // the extension's getMessengerDirs() (index.ts) would honor it and route
+  // the agent's session-id file, channel, and feed into the server-startup
+  // project — fragmenting state away from the requesting session.
+  //
+  // Instead, let the spawned agent resolve from its own process.cwd()
+  // (set to the per-request project root below), which the CLI's
+  // resolveSessionCwd() and the store's getMessengerBase() both agree on.
+  const {
+    PI_MESSENGER_DIR: _stripDir,
+    PI_MESSENGER_CWD: _stripCwd,
+    ...inheritedEnv
+  } = process.env as Record<string, string | undefined>;
   const env = {
-    ...process.env,
+    ...inheritedEnv,
     PI_SWARM_SPAWNED: '1',
     PI_AGENT_NAME: name,
     ...(inheritedChannel ? { PI_MESSENGER_CHANNEL: inheritedChannel } : {}),

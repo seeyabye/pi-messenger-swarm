@@ -15,12 +15,20 @@ import { getEffectiveSessionId } from '../../store/shared.js';
 import type { MessengerState } from '../../lib.js';
 
 const roots = new Set<string>();
-const prevDir = process.env.PI_MESSENGER_DIR;
 
 function tempMessengerDir(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-messenger-effective-sid-'));
   roots.add(root);
   return root;
+}
+
+/**
+ * getEffectiveSessionId resolves its base from cwd (via getMessengerBase),
+ * so a tempdir with no .git/.pi ancestor resolves to <dir>/.pi/messenger.
+ * Build the session-id files there.
+ */
+function messengerBase(dir: string): string {
+  return path.join(dir, '.pi', 'messenger');
 }
 
 function emptyState(): MessengerState {
@@ -34,8 +42,6 @@ function emptyState(): MessengerState {
 }
 
 afterEach(() => {
-  if (prevDir === undefined) delete process.env.PI_MESSENGER_DIR;
-  else process.env.PI_MESSENGER_DIR = prevDir;
   for (const root of roots) {
     try {
       fs.rmSync(root, { recursive: true, force: true });
@@ -49,38 +55,38 @@ afterEach(() => {
 describe('getEffectiveSessionId — per-pid disk fallback', () => {
   it('prefers sessions/<pid> over the singleton', () => {
     const dir = tempMessengerDir();
-    process.env.PI_MESSENGER_DIR = dir;
-    const sessionsDir = path.join(dir, 'sessions');
+    const base = messengerBase(dir);
+    const sessionsDir = path.join(base, 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.writeFileSync(path.join(sessionsDir, String(process.pid)), 'my-session', 'utf-8');
-    fs.writeFileSync(path.join(dir, 'session-id'), 'other-session', 'utf-8');
+    fs.writeFileSync(path.join(base, 'session-id'), 'other-session', 'utf-8');
 
-    expect(getEffectiveSessionId('/unused/cwd', emptyState())).toBe('my-session');
+    expect(getEffectiveSessionId(dir, emptyState())).toBe('my-session');
   });
 
   it('falls back to the singleton when no per-pid entry exists', () => {
     const dir = tempMessengerDir();
-    process.env.PI_MESSENGER_DIR = dir;
-    fs.writeFileSync(path.join(dir, 'session-id'), 'singleton-session', 'utf-8');
+    const base = messengerBase(dir);
+    fs.mkdirSync(base, { recursive: true });
+    fs.writeFileSync(path.join(base, 'session-id'), 'singleton-session', 'utf-8');
 
-    expect(getEffectiveSessionId('/unused/cwd', emptyState())).toBe('singleton-session');
+    expect(getEffectiveSessionId(dir, emptyState())).toBe('singleton-session');
   });
 
   it('returns empty string when nothing is on disk', () => {
     const dir = tempMessengerDir();
-    process.env.PI_MESSENGER_DIR = dir;
-    expect(getEffectiveSessionId('/unused/cwd', emptyState())).toBe('');
+    expect(getEffectiveSessionId(dir, emptyState())).toBe('');
   });
 
   it('state.contextSessionId wins over the disk fallback', () => {
     const dir = tempMessengerDir();
-    process.env.PI_MESSENGER_DIR = dir;
-    const sessionsDir = path.join(dir, 'sessions');
+    const base = messengerBase(dir);
+    const sessionsDir = path.join(base, 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.writeFileSync(path.join(sessionsDir, String(process.pid)), 'disk-session', 'utf-8');
 
     const state = emptyState();
     state.contextSessionId = 'in-memory-session';
-    expect(getEffectiveSessionId('/unused/cwd', state)).toBe('in-memory-session');
+    expect(getEffectiveSessionId(dir, state)).toBe('in-memory-session');
   });
 });

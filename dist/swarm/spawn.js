@@ -9,6 +9,7 @@ import { generateMemorableName } from '../lib.js';
 import { createProgress, parseJsonlLine, updateProgress } from './progress.js';
 import { logFeedEvent } from '../feed/index.js';
 import { removeLiveWorker, updateLiveWorker } from './live-progress.js';
+import { getMessengerBase } from '../store/shared.js';
 import { formatRoleLabel } from './labels.js';
 import { loadAgentDefinition } from './agent-loader.js';
 const AGENT_END_DESPAWN_MS = 10 * 60 * 1000;
@@ -21,13 +22,13 @@ const EXTENSION_DIR = path.resolve(__dirname, '..');
 function spawnLiveKey(id) {
     return `spawn-${id}`;
 }
-function getAgentEventsJsonlPath(cwd, sessionId) {
+export function getAgentEventsJsonlPath(cwd, sessionId) {
     const safeSessionId = sessionId.replace(/[^\w.-]/g, '_');
-    return path.join(cwd, '.pi', 'messenger', 'agents', `${safeSessionId}.jsonl`);
+    return path.join(getMessengerBase(cwd), 'agents', `${safeSessionId}.jsonl`);
 }
 function getAgentDefinitionsDir(cwd, sessionId) {
     const safeSessionId = sessionId.replace(/[^\w.-]/g, '_');
-    return path.join(cwd, '.pi', 'messenger', 'agents', safeSessionId);
+    return path.join(getMessengerBase(cwd), 'agents', safeSessionId);
 }
 function agentFilePath(cwd, sessionId, name, id) {
     const safeName = name.replace(/[^\w.-]/g, '_');
@@ -403,8 +404,20 @@ export function spawnSubagent(cwd, request, sessionId, inheritedChannel, project
         agent: { ...record },
     });
     generateAgentFile(cwd, sessionId, record);
+    // Strip the harness server's PI_MESSENGER_DIR / PI_MESSENGER_CWD pins.
+    // The server is a long-lived *shared* daemon — its env pin belongs to
+    // whichever session started it, which may be a different project than
+    // the one requesting this spawn. If a spawned agent inherited that pin,
+    // the extension's getMessengerDirs() (index.ts) would honor it and route
+    // the agent's session-id file, channel, and feed into the server-startup
+    // project — fragmenting state away from the requesting session.
+    //
+    // Instead, let the spawned agent resolve from its own process.cwd()
+    // (set to the per-request project root below), which the CLI's
+    // resolveSessionCwd() and the store's getMessengerBase() both agree on.
+    const { PI_MESSENGER_DIR: _stripDir, PI_MESSENGER_CWD: _stripCwd, ...inheritedEnv } = process.env;
     const env = {
-        ...process.env,
+        ...inheritedEnv,
         PI_SWARM_SPAWNED: '1',
         PI_AGENT_NAME: name,
         ...(inheritedChannel ? { PI_MESSENGER_CHANNEL: inheritedChannel } : {}),
