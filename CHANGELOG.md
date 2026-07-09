@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.25.21-seeyabye.3](https://github.com/seeyabye/pi-messenger-swarm/compare/v0.25.21-seeyabye.2...v0.25.21-seeyabye.3) (2026-07-09)
+
+
+### Bug Fixes
+
+* **swarm:** root .pi/messenger at the pi session cwd, not the bash cwd ([d58d837](https://github.com/seeyabye/pi-messenger-swarm/commit/d58d83729f74252ab91f9301b23e580414078e87))
+* **swarm:** route worktree agent state to the main project messenger dir ([afb0fc6](https://github.com/seeyabye/pi-messenger-swarm/commit/afb0fc6f898c868fb814ee6545b01ece6a9de141))
+* **swarm:** use same-project check for spawn completion filter ([9df9f03](https://github.com/seeyabye/pi-messenger-swarm/commit/9df9f038090da291ac49489ebf3d13bcae360e53))
+
 ### [0.25.21-seeyabye.2](https://github.com/seeyabye/pi-messenger-swarm/compare/v0.25.21-seeyabye.1...v0.25.21-seeyabye.2) (2026-07-05)
 
 

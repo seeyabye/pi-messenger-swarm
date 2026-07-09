@@ -3,3 +3,6 @@ node_modules/
 coverage/
 # Local pi-messenger runtime state (registry, sessions, channels, tasks, agents)
 .pi/
+
+# pi skill lock (local artifact)
+skills-lock.json
