@@ -238,9 +238,9 @@ describe('swarm/task-store event sourcing replay', () => {
     const replayed = taskStore.replayTasks(cwd, TEST_SESSION);
     const ids = replayed.map((t) => t.id);
 
-    // Should be sorted numerically by the number suffix
-    expect(ids).toEqual([taskA.id, taskB.id, taskC.id]);
-    expect(ids).toEqual(['task-1', 'task-2', 'task-3']);
+    // Should be sorted numerically by the number suffix, newest first (descending)
+    expect(ids).toEqual([taskC.id, taskB.id, taskA.id]);
+    expect(ids).toEqual(['task-3', 'task-2', 'task-1']);
   });
 
   it('accumulates attempt_count across multiple claims', () => {

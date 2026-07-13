@@ -171,7 +171,7 @@ export function replayTasks(cwd: string, sessionId: string): SwarmTask[] {
   const tasksById = replayEventsToMap(cwd, sessionId);
   return Array.from(tasksById.values())
     .filter((t) => t.status !== 'archived')
-    .sort((a, b) => taskNumericId(a.id) - taskNumericId(b.id));
+    .sort((a, b) => taskNumericId(b.id) - taskNumericId(a.id));
 }
 
 /**
@@ -179,5 +179,5 @@ export function replayTasks(cwd: string, sessionId: string): SwarmTask[] {
  */
 export function replayAllTasks(cwd: string, sessionId: string): SwarmTask[] {
   const tasksById = replayEventsToMap(cwd, sessionId);
-  return Array.from(tasksById.values()).sort((a, b) => taskNumericId(a.id) - taskNumericId(b.id));
+  return Array.from(tasksById.values()).sort((a, b) => taskNumericId(b.id) - taskNumericId(a.id));
 }

@@ -151,7 +151,8 @@ describe('swarm/task-store getStalledTasks', () => {
 
     const stalled = taskStore.getStalledTasks(cwd, TEST_SESSION, 0);
     expect(stalled).toHaveLength(2);
-    expect(stalled.map((t) => t.id)).toEqual([taskA.id, taskB.id]);
+    // Newest first (descending by numeric id)
+    expect(stalled.map((t) => t.id)).toEqual([taskB.id, taskA.id]);
   });
 });
 
