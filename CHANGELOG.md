@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.25.21-seeyabye.4](https://github.com/seeyabye/pi-messenger-swarm/compare/v0.25.21-seeyabye.3...v0.25.21-seeyabye.4) (2026-07-13)
+
+
+### Features
+
+* **swarm:** list newest tasks first by inverting sort order ([2720c5f](https://github.com/seeyabye/pi-messenger-swarm/commit/2720c5fdd2382b83de649fd5426107fc715548cb))
+
 ### [0.25.21-seeyabye.3](https://github.com/seeyabye/pi-messenger-swarm/compare/v0.25.21-seeyabye.2...v0.25.21-seeyabye.3) (2026-07-09)
 
 
